@@ -1,5 +1,5 @@
 import type { AssignmentSnapshot } from '../domain/models';
-import { normalizeText } from './abu-parsers';
+import { independentWorkType, normalizeText } from './abu-parsers';
 
 /** An extracted SRO brief is not a submission target. A target is an SRO_TAB card. */
 export interface WeeklySroBrief {
@@ -30,7 +30,7 @@ export function matchSroBrief(
   const candidates = briefs.filter((brief) =>
     brief.courseRef === target.courseRef &&
     brief.weekNumber === target.weekNumber &&
-    /^\s*(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(normalizeText(brief.title)) &&
+    independentWorkType(brief.title) === 'SRO' &&
     normalizeText(brief.content).length > normalizeText(brief.title).length,
   );
   if (!candidates.length) {
