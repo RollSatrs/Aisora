@@ -50,6 +50,19 @@ describe('SRO assignment matcher', () => {
     expect(matchSroBrief(week12, [src, sro]).status).toBe('AMBIGUOUS');
   });
 
+  it('ignores the task ordinal: СРС 4 and СРО №4 are both week 13 SRO briefs', () => {
+    const destination = { ...target, weekNumber: 13 };
+    const titleVariants = [
+      'СРС 4',
+      'СРС №4. IoT в здравоохранении',
+      'СРО №4. Масштабирование сетей блокчейн',
+    ];
+    for (const title of titleVariants) {
+      const item = { ...brief, weekNumber: 13, title };
+      expect(matchSroBrief(destination, [item])).toEqual({ status: 'MATCHED', brief: item });
+    }
+  });
+
   it('never crosses courses, even when week numbers match', () => {
     expect(matchSroBrief({ ...target, courseRef: 'php' }, [brief]).status).toBe('MISSING');
   });
