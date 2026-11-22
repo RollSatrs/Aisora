@@ -453,14 +453,15 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           await detail.click();
           const container = page.locator('#myfiles');
           const timeout = Number(this.config.get<string>('AIS_SRO_HISTORY_TIMEOUT_MS') ?? 10_000);
-          await container.waitFor({ state: 'visible', timeout });
+          await container.waitFor({ state: 'attached', timeout });
           await page.waitForFunction(() => {
             const node = document.querySelector('#myfiles');
             if (!node) return false;
-            return Boolean(node.querySelector('input[type="file"]') ||
+            const modal = node.closest('.modal') ?? node.parentElement ?? node;
+            return Boolean(modal.querySelector('input[type="file"]') ||
               [...node.querySelectorAll('a')].some((a) => /\\.(?:docx?|pdf|xlsx?|pptx?|txt|rtf|zip|rar|7z)\\b/i.test(a.textContent ?? '')));
           }, undefined, { timeout }).catch(() => undefined);
-          const ready = (await container.locator('input[type="file"]').count()) > 0;
+          const ready = await container.evaluate((node) => Boolean((node.closest('.modal') ?? node.parentElement ?? node).querySelector('input[type="file"]')));
           const before = await container.locator('a').allTextContents();
           await page.waitForTimeout(Number(this.config.get<string>('AIS_SRO_HISTORY_SETTLE_MS') ?? 600));
           const after = await container.locator('a').allTextContents();
