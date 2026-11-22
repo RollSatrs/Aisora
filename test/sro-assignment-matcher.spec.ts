@@ -30,6 +30,11 @@ describe('SRO assignment matcher', () => {
     expect(matchSroBrief({ ...target, weekNumber: 3 }, [brief]).status).toBe('MISSING');
   });
 
+  it('matches СРС from journal to the same-week СРО destination', () => {
+    const srcBrief = { ...brief, weekNumber: 12, title: 'СРС №3. Методы регрессии и классификации' };
+    expect(matchSroBrief({ ...target, weekNumber: 12 }, [srcBrief]).status).toBe('MATCHED');
+  });
+
   it('never crosses courses, even when week numbers match', () => {
     expect(matchSroBrief({ ...target, courseRef: 'php' }, [brief]).status).toBe('MISSING');
   });
