@@ -450,6 +450,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         if ((await detail.count()) !== 1) continue;
         await this.throttle();
         try {
+          const previousLinks = await page.locator('#myfiles a').allTextContents().catch(() => [] as string[]);
           await detail.click();
           const container = page.locator('#myfiles');
           const timeout = Number(this.config.get<string>('AIS_SRO_HISTORY_TIMEOUT_MS') ?? 10_000);
@@ -465,7 +466,13 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           const before = await container.locator('a').allTextContents();
           await page.waitForTimeout(Number(this.config.get<string>('AIS_SRO_HISTORY_SETTLE_MS') ?? 600));
           const after = await container.locator('a').allTextContents();
+          // Never attribute the previous modal's file list to the newly opened week.
+          const stalePreviousFiles = previousLinks.length > 0 && JSON.stringify(previousLinks) === JSON.stringify(after);
           const evidence = classifySroHistory(after, ready, JSON.stringify(before) === JSON.stringify(after));
+          if (stalePreviousFiles && evidence.status === 'CONFIRMED') {
+            evidence.status = 'UNKNOWN';
+            evidence.reason = 'previous file list did not refresh';
+          }
           assignment.submissionState = evidence.status;
           assignment.submitted = evidence.status === 'CONFIRMED';
           this.logger.log(`SRO history course=${courseIndex + 1} week=${assignment.weekNumber}: ${evidence.status} files=${evidence.files.length}`);
