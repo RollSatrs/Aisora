@@ -459,7 +459,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
             if (!node) return false;
             const modal = node.closest('.modal') ?? node.parentElement ?? node;
             return Boolean(modal.querySelector('input[type="file"]') ||
-              [...node.querySelectorAll('a')].some((a) => /\\.(?:docx?|pdf|xlsx?|pptx?|txt|rtf|zip|rar|7z)\\b/i.test(a.textContent ?? '')));
+              [...node.querySelectorAll('a')].some((a) => /\.(?:docx?|pdf|xlsx?|pptx?|txt|rtf|zip|rar|7z)\b/i.test(a.textContent ?? '')));
           }, undefined, { timeout }).catch(() => undefined);
           const ready = await container.evaluate((node) => Boolean((node.closest('.modal') ?? node.parentElement ?? node).querySelector('input[type="file"]')));
           const before = await container.locator('a').allTextContents();
