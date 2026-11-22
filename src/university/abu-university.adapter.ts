@@ -444,7 +444,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         await this.throttle();
         await detail.click();
         await page.locator('#myfiles').waitFor({ state: 'attached' });
-        await page.waitForTimeout(Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 3_000));
+        await page.waitForTimeout(Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 1_000));
         const history = normalizeText(await page.locator('#myfiles').innerText());
         assignment.submissionState = history ? 'CONFIRMED' : 'ABSENT';
         assignment.submitted = Boolean(history);
@@ -539,22 +539,25 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       const anchor = page.locator('#journaltabletab a:visible').filter({ hasText: title }).first();
       if (!(await anchor.count())) continue;
       const before = normalizeText(await page.locator('#contentdetdiv').innerText().catch(() => ''));
+      const started = Date.now();
       await anchor.click();
       await page.waitForFunction((previous) => {
         const current = (document.querySelector('#contentdetdiv')?.textContent ?? '').replace(/\s+/g, ' ').trim();
         return current.length > 0 && current !== previous;
-      }, before, { timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000) })
+      }, before, { timeout: Number(this.config.get<string>('AIS_DETAIL_CHANGE_TIMEOUT_MS') ?? 8_000) })
         .catch(() => undefined);
       const container = page.locator('#contentdetdiv');
       const body = normalizeText(await container.innerText().catch(() => ''));
       // Do not attach stale content from a previous dialog to a new task.
       if (!body || body === before || body.length <= title.length) {
+        this.logger.warn(`Content detail unavailable week=${week} elapsed_ms=${Date.now() - started}; skipping unchanged dialog`);
         const weekLink = page.locator(`#li-${week} a`);
         if (await weekLink.count()) { await weekLink.click(); await this.waitForWeekContent(page, week); }
         continue;
       }
       const resources = await this.contentExtractor.extractLinkedResources(page, container);
       details.set(title, normalizeText([body, ...resources.map((resource) => resource.text)].join(' ')));
+      this.logger.log(`Content detail read week=${week} elapsed_ms=${Date.now() - started}`);
 
       const weekLink = page.locator(`#li-${week} a`);
       if (await weekLink.count()) {
