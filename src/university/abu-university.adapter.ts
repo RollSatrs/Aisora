@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   OnModuleDestroy,
   RequestTimeoutException,
   UnauthorizedException,
@@ -67,6 +68,7 @@ export class AbuReadTimeoutError extends RequestTimeoutException {
 @Injectable()
 export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy {
   readonly key = 'abu-ais';
+  private readonly logger = new Logger(AbuUniversityAdapter.name);
   private readonly contexts = new Map<string, BrowserContext>();
   private operation = Promise.resolve();
   private lastRequestAt = 0;
@@ -361,9 +363,15 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         // <strong> used to attach an assignment from another week (or course) to
         // the currently requested week. Only visible linked content belongs to
         // the week whose heading was verified by waitForWeekContent().
-        const contentTitles = (await page.locator('#journaltabletab a:visible strong:visible').allTextContents())
-          .map(normalizeText)
-          .filter((title) => contentType(title) !== undefined || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title));
+        // SRO items are not guaranteed to wrap their title in <strong>.
+        // Only inspect visible links inside the verified week panel: hidden
+        // AJAX fragments from previous weeks must never be matched.
+        const contentTitles = [...new Set(
+          (await page.locator('#journaltabletab a:visible').allTextContents())
+            .map(normalizeText)
+            .filter((title) => contentType(title) !== undefined || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title)),
+        )];
+        this.logger.log(`SRO discovery course=${courseIndex + 1} week=${week}: links=${contentTitles.length}, sro=${contentTitles.filter((title) => /^СРО(?:\s|№|\d|[.:]|$)/i.test(title)).length}`);
         const details = await this.readContentDetails(
           page,
           week,
@@ -371,6 +379,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           !options.disabledLabCourseRefs?.has(courseRef),
         );
         contentObservations.push({ week, titles: contentTitles, details });
+        this.logger.log(`SRO detail reading course=${courseIndex + 1} week=${week}: opened=${details.size}`);
         for (const title of contentTitles.filter((value) => /^СРО(?:\s|№|\d|[.:]|$)/i.test(value))) {
           const content = details.get(title);
           if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
@@ -417,6 +426,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       const sroAssignments = parseSroText(courseRef, await page.locator('#tab_2-2').innerText());
       for (const assignment of sroAssignments) {
         const match = matchSroBrief(assignment, sroBriefs);
+        if (match.status !== 'MATCHED') {
+          this.logger.warn(`SRO condition mismatch course=${courseIndex + 1} week=${assignment.weekNumber}: ${match.status}; read_briefs=${sroBriefs.filter((brief) => brief.weekNumber === assignment.weekNumber).length}`);
+        }
         if (match.status === 'MATCHED') {
           const requirements = extractSroRequirements(match.brief);
           // Keep the SRO_TAB identity/status; append the real condition so
