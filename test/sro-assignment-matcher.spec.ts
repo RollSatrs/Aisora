@@ -35,6 +35,21 @@ describe('SRO assignment matcher', () => {
     expect(matchSroBrief({ ...target, weekNumber: 12 }, [srcBrief]).status).toBe('MATCHED');
   });
 
+  it('does not mistake СРСП/СРОП assignments for an SRO submission', () => {
+    const srsp = { ...brief, weekNumber: 12, title: 'СРСП №3. Методы регрессии и классификации' };
+    const srop = { ...brief, weekNumber: 12, title: 'СРОП №3. Методы регрессии и классификации' };
+    const destination = { ...target, weekNumber: 12 };
+    expect(matchSroBrief(destination, [srsp]).status).toBe('MISSING');
+    expect(matchSroBrief(destination, [srop]).status).toBe('MISSING');
+  });
+
+  it('refuses to guess when СРС and СРО coexist as distinct briefs on one week', () => {
+    const week12 = { ...target, weekNumber: 12 };
+    const src = { ...brief, weekNumber: 12, title: 'СРС №3. Методы регрессии и классификации' };
+    const sro = { ...brief, weekNumber: 12, title: 'СРО №4. Другое задание' };
+    expect(matchSroBrief(week12, [src, sro]).status).toBe('AMBIGUOUS');
+  });
+
   it('never crosses courses, even when week numbers match', () => {
     expect(matchSroBrief({ ...target, courseRef: 'php' }, [brief]).status).toBe('MISSING');
   });
