@@ -22,6 +22,7 @@ import type {
 import { AdaptiveAisNavigator } from './adaptive-ais-navigator';
 import {
   contentType,
+  futureSroWeeks,
   independentWorkType,
   isRelevantSentSubject,
   normalizeText,
@@ -481,19 +482,15 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       // Future weeks can be published in AIS even when the current *rating*
       // week is still 12. Only scan future weeks with a real, ungraded SRO
       // destination card. This keeps additional requests targeted.
-      const futureSroWeeks = [...new Set(sroAssignments
-        .filter((assignment) => assignment.weekNumber > currentWeek
-          && assignment.grade === undefined
-          && weekNumbers.includes(assignment.weekNumber))
-        .map((assignment) => assignment.weekNumber))].sort((a, b) => a - b);
-      if (futureSroWeeks.length) {
+      const futureWeeks = futureSroWeeks(currentWeek, weekNumbers, sroAssignments);
+      if (futureWeeks.length) {
         await this.navigator.navigate(page, {
           goal: 'Вернуться в журнал для чтения опубликованных СРО будущих недель',
           expected: page.locator('#journaltabletab').first(),
           semanticHints: ['Журнал'],
           onProgress,
         });
-        for (const week of futureSroWeeks) {
+        for (const week of futureWeeks) {
           await onProgress?.(`Дисциплина ${courseIndex + 1} из ${courseNames.length}: проверяю СРО ${week}-й недели`);
           const weekLink = page.locator(`#li-${week} a`);
           if (!(await weekLink.count())) continue;
