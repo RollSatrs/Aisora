@@ -16,7 +16,7 @@ export interface ExtractedResource {
 export class AisContentExtractor {
   constructor(private readonly config: ConfigService) {}
 
-  async extractLinkedResources(page: Page, container: Locator): Promise<ExtractedResource[]> {
+  async extractLinkedResources(page: Page, container: Locator, timeoutMs?: number): Promise<ExtractedResource[]> {
     const links = await container.locator('a').evaluateAll((elements) => elements.map((element) => ({
       name: (element.textContent || '').replace(/\s+/g, ' ').trim(),
       href: element.getAttribute('href'),
@@ -29,14 +29,14 @@ export class AisContentExtractor {
       if (absoluteUrl.hostname !== 'ais.semuniver.kz' || seen.has(absoluteUrl.href)) continue;
       if (!this.looksLikeDocument(link.name, absoluteUrl.pathname, link.download)) continue;
       seen.add(absoluteUrl.href);
-      const resource = await this.downloadAndExtract(page, absoluteUrl.href, link.download || link.name || absoluteUrl.pathname);
+      const resource = await this.downloadAndExtract(page, absoluteUrl.href, link.download || link.name || absoluteUrl.pathname, timeoutMs);
       if (resource) resources.push(resource);
     }
     return resources;
   }
 
-  async downloadAndExtract(page: Page, url: string, name: string): Promise<ExtractedResource | undefined> {
-    const response = await page.request.get(url, { timeout: Number(this.config.get<string>('AIS_DOWNLOAD_TIMEOUT_MS') ?? 120_000) })
+  async downloadAndExtract(page: Page, url: string, name: string, timeoutMs?: number): Promise<ExtractedResource | undefined> {
+    const response = await page.request.get(url, { timeout: timeoutMs ?? Number(this.config.get<string>('AIS_DOWNLOAD_TIMEOUT_MS') ?? 120_000) })
       .catch(() => undefined);
     if (!response?.ok()) return undefined;
     const maximum = Number(this.config.get<string>('AIS_MAX_ATTACHMENT_BYTES') ?? 15 * 1024 * 1024);
