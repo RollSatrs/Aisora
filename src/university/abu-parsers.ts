@@ -80,15 +80,15 @@ export function parseSentMessageRows(rows: string[]): SentMessageObservation[] {
  */
 export function independentWorkType(title: string): 'SRO' | 'SRSP' | undefined {
   const normalized = normalizeText(title);
-  if (/(?:^|[\\s(])(?:СРСП|СРОП)(?=$|[\\s№\\d.,:;()\\-–—])/iu.test(normalized)) return 'SRSP';
-  if (/(?:^|[\\s(])(?:СРС|СРО)(?=$|[\\s№\\d.,:;()\\-–—])/iu.test(normalized)) return 'SRO';
+  if (/(?:^|[\s(])(?:СРСП|СРОП)(?=$|[\s№\d.,:;()\-–—])/iu.test(normalized)) return 'SRSP';
+  if (/(?:^|[\s(])(?:СРС|СРО)(?=$|[\s№\d.,:;()\-–—])/iu.test(normalized)) return 'SRO';
   return undefined;
 }
 
 export function contentType(title: string): AssignmentType | undefined {
   // A journal SRO label is read as a *brief*, not a second submission record.
   if (independentWorkType(title) === 'SRSP') return 'SRSP';
-  if (/(?:^|\\s)(?:Лаб|Лабораторн)/i.test(title)) return 'LAB';
+  if (/(?:^|\s)(?:Лаб|Лабораторн)/i.test(title)) return 'LAB';
   return undefined;
 }
 
