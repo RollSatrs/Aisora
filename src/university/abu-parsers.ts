@@ -48,6 +48,22 @@ export function isRelevantSentSubject(subject: string): boolean {
   return /срсп|сроп|лаб(?:ораторн)?/i.test(subject);
 }
 
+/** Scan only future academic weeks with a pending SRO-tab card. */
+export function futureSroWeeks(
+  currentWeek: number,
+  availableWeeks: readonly number[],
+  cards: readonly Pick<AssignmentSnapshot, 'type' | 'source' | 'weekNumber' | 'grade'>[],
+): number[] {
+  const available = new Set(availableWeeks);
+  return [...new Set(cards
+    .filter((card) => card.type === 'SRO'
+      && card.source === 'SRO_TAB'
+      && card.weekNumber > currentWeek
+      && available.has(card.weekNumber)
+      && card.grade === undefined)
+    .map((card) => card.weekNumber))].sort((a, b) => a - b);
+}
+
 export function parseSentMessageRows(rows: string[]): SentMessageObservation[] {
   return rows.flatMap((row) => {
     const normalized = normalizeText(row);
