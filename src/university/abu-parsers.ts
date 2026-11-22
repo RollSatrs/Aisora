@@ -116,8 +116,6 @@ function messageMatches(
 ): boolean {
   const value = normalizeText(message.subject).toLowerCase();
   const messageContent = [message.subject, message.body ?? '', ...(message.resourceTexts ?? [])].join(' ');
-  const assignmentNumber = title.match(/№\s*(\d+)/i)?.[1];
-  const numberMatches = Boolean(assignmentNumber && new RegExp(`(?:№\\s*|\\b)${assignmentNumber}\\b`, 'i').test(value));
   const weekMatches = value.includes(`${week} неделя`) || value.includes(`${week}-я неделя`);
   const similarContent = contentSimilarity(expectedContent, messageContent) >= 0.28;
   if (type === 'SRSP') {
