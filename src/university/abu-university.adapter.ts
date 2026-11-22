@@ -29,6 +29,7 @@ import {
   type SentMessageObservation,
 } from './abu-parsers';
 import { AisContentExtractor } from './ais-content-extractor';
+import { extractSroRequirements, matchSroBrief, type WeeklySroBrief } from './sro-assignment-matcher';
 import type { SyncProgress, UniversityAdapter, UniversityReadOptions } from './university-adapter';
 
 const AIS_URL = 'https://ais.semuniver.kz/login.php';
@@ -341,6 +342,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       });
 
       const contentObservations: Array<{ week: number; titles: string[]; details: Map<string, string> }> = [];
+      const sroBriefs: WeeklySroBrief[] = [];
       for (const week of activePeriodWeeks(currentWeek)) {
         await onProgress?.(`Дисциплина ${courseIndex + 1} из ${courseNames.length}: проверяю ${week}-ю неделю`);
         const weekLink = page.locator(`#li-${week} a`);
@@ -361,7 +363,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         // the week whose heading was verified by waitForWeekContent().
         const contentTitles = (await page.locator('#journaltabletab a:visible strong:visible').allTextContents())
           .map(normalizeText)
-          .filter((title) => contentType(title) !== undefined);
+          .filter((title) => contentType(title) !== undefined || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title));
         const details = await this.readContentDetails(
           page,
           week,
@@ -369,6 +371,10 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           !options.disabledLabCourseRefs?.has(courseRef),
         );
         contentObservations.push({ week, titles: contentTitles, details });
+        for (const title of contentTitles.filter((value) => /^СРО(?:\s|№|\d|[.:]|$)/i.test(value))) {
+          const content = details.get(title);
+          if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
+        }
       }
 
       await this.throttle();
@@ -410,6 +416,16 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       });
       const sroAssignments = parseSroText(courseRef, await page.locator('#tab_2-2').innerText());
       for (const assignment of sroAssignments) {
+        const match = matchSroBrief(assignment, sroBriefs);
+        if (match.status === 'MATCHED') {
+          const requirements = extractSroRequirements(match.brief);
+          // Keep the SRO_TAB identity/status; append the real condition so
+          // downstream storage and the task report can expose its requirements.
+          assignment.content = [assignment.content, 'Условие из журнала:', requirements.fullText].join('\n');
+          assignment.assignmentNumber = Number(match.brief.title.match(/№\s*(\d+)/)?.[1]) || undefined;
+        }
+        // A missing or ambiguous brief is never assumed to belong to this card.
+        // This does not change debt evidence or attempt an upload.
         if (assignment.grade !== undefined || assignment.weekNumber > currentWeek) continue;
         const detail = page.locator('#tab_2-2 a').filter({ hasText: `${assignment.weekNumber} неделя` });
         if ((await detail.count()) !== 1) continue;
@@ -504,11 +520,11 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   ): Promise<Map<string, string>> {
     const titles = rawTitles.map(normalizeText).filter((title) => {
       const type = contentType(title);
-      return type === 'SRSP' || (type === 'LAB' && analyzeLabs);
+      return type === 'SRSP' || type === 'SRO' || (type === 'LAB' && analyzeLabs) || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title);
     });
     const details = new Map<string, string>();
     for (const title of titles) {
-      const anchor = page.locator('#journaltabletab a').filter({ hasText: title }).first();
+      const anchor = page.locator('#journaltabletab a:visible').filter({ hasText: title }).first();
       if (!(await anchor.count())) continue;
       const before = normalizeText(await page.locator('#contentdetdiv').innerText().catch(() => ''));
       await anchor.click();
@@ -518,7 +534,13 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       }, before, { timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000) })
         .catch(() => undefined);
       const container = page.locator('#contentdetdiv');
-      const body = normalizeText(await container.innerText().catch(() => title));
+      const body = normalizeText(await container.innerText().catch(() => ''));
+      // Do not attach stale content from a previous dialog to a new task.
+      if (!body || body === before || body.length <= title.length) {
+        const weekLink = page.locator(`#li-${week} a`);
+        if (await weekLink.count()) { await weekLink.click(); await this.waitForWeekContent(page, week); }
+        continue;
+      }
       const resources = await this.contentExtractor.extractLinkedResources(page, container);
       details.set(title, normalizeText([body, ...resources.map((resource) => resource.text)].join(' ')));
 
