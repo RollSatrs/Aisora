@@ -57,9 +57,22 @@ export function parseSentMessageRows(rows: string[]): SentMessageObservation[] {
   });
 }
 
+/**
+ * ABU terminology: СРО/СРС are submitted via the СРО tab,
+ * СРСП/СРОП via messages. The label's number is not the submission week.
+ * Check longer labels first and accept nonstandard spacing/punctuation.
+ */
+export function independentWorkType(title: string): 'SRO' | 'SRSP' | undefined {
+  const normalized = normalizeText(title);
+  if (/(?:^|[\\s(])(?:СРСП|СРОП)(?=$|[\\s№\\d.,:;()\\-–—])/iu.test(normalized)) return 'SRSP';
+  if (/(?:^|[\\s(])(?:СРС|СРО)(?=$|[\\s№\\d.,:;()\\-–—])/iu.test(normalized)) return 'SRO';
+  return undefined;
+}
+
 export function contentType(title: string): AssignmentType | undefined {
-  if (/(?:^|\s)(?:СРСП|СРОП)(?:\s|№|\d|\.|$)/i.test(title)) return 'SRSP';
-  if (/(?:^|\s)(?:Лаб|Лабораторн)/i.test(title)) return 'LAB';
+  // A journal SRO label is read as a *brief*, not a second submission record.
+  if (independentWorkType(title) === 'SRSP') return 'SRSP';
+  if (/(?:^|\\s)(?:Лаб|Лабораторн)/i.test(title)) return 'LAB';
   return undefined;
 }
 
