@@ -120,7 +120,14 @@ function messageMatches(
   const numberMatches = Boolean(assignmentNumber && new RegExp(`(?:№\\s*|\\b)${assignmentNumber}\\b`, 'i').test(value));
   const weekMatches = value.includes(`${week} неделя`) || value.includes(`${week}-я неделя`);
   const similarContent = contentSimilarity(expectedContent, messageContent) >= 0.28;
-  if (type === 'SRSP') return /срсп|сроп/i.test(value) && (weekMatches || numberMatches || similarContent);
+  if (type === 'SRSP') {
+    if (!/срсп|сроп/i.test(value)) return false;
+    // The ordinal №4 is not a week and cannot on its own confirm submission.
+    // An explicit, different academic week is conflicting evidence.
+    const statedWeek = value.match(/(\\d{1,2})\\s*(?:-\\s*[яй])?\\s*недел[яи]/i)?.[1];
+    if (statedWeek && Number(statedWeek) !== week) return false;
+    return weekMatches || (!statedWeek && similarContent);
+  }
   if (type === 'LAB') {
     const number = title.match(/(?:№|лаб(?:ораторная работа)?\s*)(\d+)/i)?.[1];
     const labNumberMatches = !number || new RegExp(`(?:№\\s*|лаб\\s*)${number}\\b`, 'i').test(value);
