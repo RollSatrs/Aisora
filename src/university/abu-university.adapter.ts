@@ -250,7 +250,11 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
 
   private async openJournal(page: Page, onProgress?: SyncProgress): Promise<void> {
     const disciplineSelector = page.getByText('Выберите Вашу дисциплину', { exact: true }).first();
-    if (await disciplineSelector.isVisible().catch(() => false)) return;
+    if (await disciplineSelector.isVisible().catch(() => false)) {
+      this.logger.log('AIS journal header is visible; checking course menu readiness');
+      await this.waitForJournalReady(page, onProgress);
+      return;
+    }
 
     const interactiveTargets = page.locator('a, button, [role="link"], [role="button"]');
     const journalTargets = interactiveTargets.filter({ hasText: /Электронный журнал/i });
@@ -271,11 +275,14 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     if (await journalLink.isVisible().catch(() => false)) {
       await onProgress?.('Открываю электронный журнал');
       await this.throttle();
+      const started = Date.now();
       await journalLink.click();
       await disciplineSelector.waitFor({
         state: 'visible',
         timeout: Number(this.config.get<string>('AIS_PAGE_TIMEOUT_MS') ?? 300_000),
       });
+      this.logger.log(`AIS journal header appeared after ${Date.now() - started}ms`);
+      await this.waitForJournalReady(page, onProgress);
       return;
     }
 
@@ -285,11 +292,14 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     if (await journalTargets.count()) {
       await onProgress?.('Открываю электронный журнал');
       await this.throttle();
+      const started = Date.now();
       await journalTargets.first().evaluate((element) => (element as HTMLElement).click());
       await disciplineSelector.waitFor({
         state: 'visible',
         timeout: Number(this.config.get<string>('AIS_PAGE_TIMEOUT_MS') ?? 300_000),
       });
+      this.logger.log(`AIS journal header appeared after ${Date.now() - started}ms (fallback navigation)`);
+      await this.waitForJournalReady(page, onProgress);
       return;
     }
 
@@ -299,6 +309,30 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       semanticHints: ['Электронный журнал', 'Обучение'],
       onProgress,
     });
+    await this.waitForJournalReady(page, onProgress);
+  }
+
+  /**
+   * The AIS journal header can render while its course dropdown is still
+   * being hydrated. Wait for the menu trigger to be enabled instead of
+   * treating a visible heading as a fully ready journal.
+   */
+  private async waitForJournalReady(page: Page, onProgress?: SyncProgress): Promise<void> {
+    const started = Date.now();
+    const selector = page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).first();
+    await onProgress?.('Ожидаю список дисциплин в журнале');
+    await selector.waitFor({
+      state: 'visible',
+      timeout: Number(this.config.get<string>('AIS_JOURNAL_READY_TIMEOUT_MS') ?? 45_000),
+    });
+    await page.waitForFunction(() => {
+      const element = [...document.querySelectorAll('a')].find((a) =>
+        (a.textContent ?? '').replace(/\\s+/g, ' ').trim() === 'Выберите Вашу дисциплину',
+      );
+      return Boolean(element && element.getAttribute('aria-disabled') !== 'true' &&
+        !element.hasAttribute('disabled'));
+    }, undefined, { timeout: Number(this.config.get<string>('AIS_JOURNAL_READY_TIMEOUT_MS') ?? 45_000) });
+    this.logger.log(`AIS journal course selector ready after ${Date.now() - started}ms`);
   }
 
   private async readJournal(
@@ -313,8 +347,16 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     weeks: WeekSnapshot[];
     assignments: AssignmentSnapshot[];
   }> {
+    const menuStarted = Date.now();
+    await onProgress?.('Получаю дисциплины из журнала');
     await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
-    const menuNames = (await page.getByRole('menuitem').allTextContents()).map(normalizeText).filter(Boolean);
+    const courseMenu = page.getByRole('menuitem');
+    await courseMenu.first().waitFor({
+      state: 'visible',
+      timeout: Number(this.config.get<string>('AIS_JOURNAL_READY_TIMEOUT_MS') ?? 45_000),
+    });
+    const menuNames = (await courseMenu.allTextContents()).map(normalizeText).filter(Boolean);
+    this.logger.log(`AIS course dropdown populated: ${menuNames.length} entries in ${Date.now() - menuStarted}ms`);
     await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
     const discoveredNames = menuNames.length ? menuNames : dashboardCourses.map((course) => course.name.replace(/\s*\([^)]*\)$/, ''));
     const courseNames = this.orderCourseNames(discoveredNames);
@@ -327,12 +369,14 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       await onProgress?.(`Читаю дисциплину ${courseIndex + 1} из ${courseNames.length}`);
       await this.throttle();
       await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+      const courseStarted = Date.now();
       await page.getByRole('menuitem', { name, exact: true }).click();
       await page.locator('#journaltabletab').waitFor({ state: 'visible' });
       await page.waitForFunction((courseName) => {
         const text = (document.querySelector('#main')?.textContent ?? '').replace(/\s+/g, ' ');
         return text.includes(String(courseName));
       }, name);
+      this.logger.log(`AIS course ${courseIndex + 1}/${courseNames.length} loaded after ${Date.now() - courseStarted}ms`);
       const mainText = await page.locator('#main').innerText();
       const journalMatch = mainText.match(/([^\n]+)\s+журнал №\s*(\d+)/i);
       const dashboardCourse = dashboardCourses.find((course) => course.name.replace(/\s*\([^)]*\)$/, '') === name);
