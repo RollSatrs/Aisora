@@ -30,7 +30,7 @@ export function matchSroBrief(
   const candidates = briefs.filter((brief) =>
     brief.courseRef === target.courseRef &&
     brief.weekNumber === target.weekNumber &&
-    /^\s*СРО(?:\s|№|\d|[.:]|$)/i.test(normalizeText(brief.title)) &&
+    /^\s*(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(normalizeText(brief.title)) &&
     normalizeText(brief.content).length > normalizeText(brief.title).length,
   );
   if (!candidates.length) {
