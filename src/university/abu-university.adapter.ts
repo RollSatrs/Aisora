@@ -373,9 +373,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         const contentTitles = [...new Set(
           (await page.locator('#journaltabletab a:visible').allTextContents())
             .map(normalizeText)
-            .filter((title) => contentType(title) !== undefined || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title)),
+            .filter((title) => contentType(title) !== undefined || /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title)),
         )];
-        this.logger.log(`SRO discovery course=${courseIndex + 1} week=${week}: links=${contentTitles.length}, sro=${contentTitles.filter((title) => /^СРО(?:\s|№|\d|[.:]|$)/i.test(title)).length}`);
+        this.logger.log(`SRO discovery course=${courseIndex + 1} week=${week}: links=${contentTitles.length}, sro=${contentTitles.filter((title) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title)).length}`);
         if (!contentTitles.some((title) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title))) {
           await this.htmlDiagnostics.capture(diagnosticAccountId, courseRef, week, 'weekly-content', page.locator('#journaltabletab'));
         }
@@ -387,7 +387,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         );
         contentObservations.push({ week, titles: contentTitles, details });
         this.logger.log(`SRO detail reading course=${courseIndex + 1} week=${week}: opened=${details.size}`);
-        for (const title of contentTitles.filter((value) => /^СРО(?:\s|№|\d|[.:]|$)/i.test(value))) {
+        for (const title of contentTitles.filter((value) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(value))) {
           const content = details.get(title);
           if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
         }
@@ -559,7 +559,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   ): Promise<Map<string, string>> {
     const titles = rawTitles.map(normalizeText).filter((title) => {
       const type = contentType(title);
-      return type === 'SRSP' || type === 'SRO' || (type === 'LAB' && analyzeLabs) || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title);
+      return type === 'SRSP' || type === 'SRO' || (type === 'LAB' && analyzeLabs) || /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title);
     });
     const details = new Map<string, string>();
     for (const title of titles) {
