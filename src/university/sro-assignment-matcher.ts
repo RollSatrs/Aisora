@@ -80,6 +80,6 @@ export function extractSroRequirements(brief: WeeklySroBrief): SroRequirements {
     minimumSources: sources ? Number(sources[1]) : undefined,
     requiresTitlePage: /титульн(?:ый|ого)\s+лист/i.test(text),
     requiresReferences: /список\s+литературы|список\s+источников/i.test(text),
-    requiresOriginalityCheck: /уникальност|антиплагиат/i.test(text),
+    requiresOriginalityCheck: /уникальност|оригинальност|антиплагиат/i.test(text),
   };
 }
