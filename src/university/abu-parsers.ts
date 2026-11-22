@@ -40,6 +40,14 @@ export function parseSroText(courseRef: string, text: string): AssignmentSnapsho
   });
 }
 
+/**
+ * Message evidence for SRSP/SROP and LAB can only match subjects with these
+ * labels (see messageMatches). Other subjects need no expensive body view.
+ */
+export function isRelevantSentSubject(subject: string): boolean {
+  return /срсп|сроп|лаб(?:ораторн)?/i.test(subject);
+}
+
 export function parseSentMessageRows(rows: string[]): SentMessageObservation[] {
   return rows.flatMap((row) => {
     const normalized = normalizeText(row);
