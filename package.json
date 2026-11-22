@@ -1,0 +1,51 @@
+{
+  "name": "aisora",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only-first academic assistant MVP",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.22.0",
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/src/main.js",
+    "start:dev": "nest start --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --exclude '**/*.integration.spec.ts'",
+    "test:integration": "vitest run test/mvp.integration.spec.ts",
+    "test:all": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@nestjs/bullmq": "^11.0.4",
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-express": "^11.1.6",
+    "bullmq": "^5.61.0",
+    "drizzle-orm": "^0.44.7",
+    "grammy": "^1.38.3",
+    "ioredis": "^5.8.1",
+    "mammoth": "1.11.0",
+    "pdf-parse": "1.1.1",
+    "pg": "^8.16.3",
+    "playwright": "^1.65.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@nestjs/cli": "^11.0.10",
+    "@nestjs/testing": "^11.1.6",
+    "@types/node": "^24.10.0",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/pg": "^8.15.6",
+    "drizzle-kit": "^0.31.6",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vitest": "^4.0.9"
+  }
+}

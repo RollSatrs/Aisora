@@ -1,0 +1,533 @@
+import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import {
+  ForbiddenException,
+  Injectable,
+  OnModuleDestroy,
+  RequestTimeoutException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { chromium, type BrowserContext, type Page } from 'playwright';
+import { CredentialVaultService } from '../auth/credential-vault.service';
+import type {
+  AssignmentSnapshot,
+  CourseSnapshot,
+  ScheduleEventSnapshot,
+  UniversitySnapshot,
+  WeekSnapshot,
+} from '../domain/models';
+import { AdaptiveAisNavigator } from './adaptive-ais-navigator';
+import {
+  contentType,
+  normalizeText,
+  parseContentAssignments,
+  parseSentMessageRows,
+  parseSroText,
+  stableExternalRef,
+  type SentMessageObservation,
+} from './abu-parsers';
+import { AisContentExtractor } from './ais-content-extractor';
+import type { SyncProgress, UniversityAdapter, UniversityReadOptions } from './university-adapter';
+
+const AIS_URL = 'https://ais.semuniver.kz/login.php';
+const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
+
+export function activePeriodWeeks(currentWeek: number): number[] {
+  const start = currentWeek <= 8 ? 1 : 9;
+  return Array.from({ length: currentWeek - start + 1 }, (_, index) => currentWeek - index);
+}
+
+export class AbuSessionRequiredError extends UnauthorizedException {
+  constructor() {
+    super('ABU AIS session is missing or expired and no saved credentials are available. Use /connect first.');
+  }
+}
+
+export class AbuCredentialsRejectedError extends UnauthorizedException {
+  constructor() {
+    super('ABU AIS rejected the saved credentials. Use /connect to update them.');
+  }
+}
+
+export class AutomationPermissionRequiredError extends ForbiddenException {
+  constructor() {
+    super('ABU AIS read-only automation requires explicit authorization. Set AIS_AUTOMATION_APPROVED=true only after approval.');
+  }
+}
+
+export class AbuReadTimeoutError extends RequestTimeoutException {
+  constructor(readonly stage: string) {
+    super(`ABU AIS did not respond during stage: ${stage}`);
+  }
+}
+
+@Injectable()
+export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy {
+  readonly key = 'abu-ais';
+  private readonly contexts = new Map<string, BrowserContext>();
+  private operation = Promise.resolve();
+  private lastRequestAt = 0;
+
+  constructor(
+    private readonly config: ConfigService,
+    private readonly credentialVault: CredentialVaultService,
+    private readonly navigator: AdaptiveAisNavigator,
+    private readonly contentExtractor: AisContentExtractor,
+  ) {}
+
+  async onModuleDestroy(): Promise<void> {
+    await Promise.all([...this.contexts.values()].map((context) => context.close()));
+    this.contexts.clear();
+  }
+
+  async readSnapshot(
+    accountId: string,
+    onProgress?: SyncProgress,
+    options: UniversityReadOptions = {},
+  ): Promise<UniversitySnapshot> {
+    if (this.config.get<string>('AIS_AUTOMATION_APPROVED') !== 'true') {
+      throw new AutomationPermissionRequiredError();
+    }
+    return this.serialized(async () => {
+      await onProgress?.('Запускаю браузер AIS');
+      const page = await this.withStage('запуск браузерной сессии', () => this.page(accountId));
+      await this.throttle();
+      await onProgress?.('Открываю главную страницу AIS');
+      await this.withStage('открытие AIS', () => page.goto(AIS_URL, { waitUntil: 'domcontentloaded' }));
+      await this.withStage('ожидание загрузки главной страницы', () => this.waitForHomeReady(page));
+      if (await page.getByRole('button', { name: 'Войти', exact: true }).isVisible().catch(() => false)) {
+        await onProgress?.('Выполняю автоматический вход');
+        await this.withStage('автоматический вход', () => this.login(page, accountId));
+      }
+
+      await onProgress?.('Читаю список дисциплин');
+      const dashboardCourses = await this.withStage('чтение списка дисциплин', () => this.readDashboardCourses(page));
+      await onProgress?.('Открываю электронный журнал');
+      await this.withStage('открытие электронного журнала', () => this.openJournal(page, onProgress));
+      await onProgress?.('Читаю задания, оценки и отправки');
+      const journal = await this.withStage(
+        'чтение заданий и отправок',
+        () => this.readJournal(page, dashboardCourses, onProgress, options),
+      );
+      await this.throttle();
+      await onProgress?.('Читаю расписание');
+      await this.withStage('возврат на главную страницу', () => page.goto(AIS_URL, { waitUntil: 'domcontentloaded' }));
+      await this.withStage('ожидание главной страницы', () => this.waitForHomeReady(page));
+      const schedule = await this.withStage('чтение расписания', () => this.readSchedule(page, journal.courses, journal.currentWeek));
+      return {
+        session: 'ACTIVE',
+        currentWeek: journal.currentWeek,
+        courses: journal.courses,
+        weeks: journal.weeks,
+        assignments: journal.assignments,
+        schedule,
+      };
+    });
+  }
+
+  private async serialized<T>(action: () => Promise<T>): Promise<T> {
+    const previous = this.operation;
+    let release!: () => void;
+    this.operation = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try { return await action(); } finally { release(); }
+  }
+
+  private async withStage<T>(stage: string, action: () => Promise<T>): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') throw new AbuReadTimeoutError(stage);
+      throw error;
+    }
+  }
+
+  private async waitForHomeReady(page: Page): Promise<void> {
+    await page.locator('.box-body.box-profile, input[name="login"]').first().waitFor({ state: 'visible' });
+  }
+
+  private async page(accountId: string): Promise<Page> {
+    let context = this.contexts.get(accountId);
+    if (!context) {
+      const profileRoot = this.config.get<string>('AIS_BROWSER_PROFILE_DIR') || join(homedir(), '.aisora', 'abu-browser-profile');
+      const profileName = createHash('sha256').update(accountId).digest('hex').slice(0, 16);
+      context = await chromium.launchPersistentContext(join(profileRoot, profileName), {
+        channel: 'chrome',
+        headless: this.config.get<string>('AIS_BROWSER_HEADLESS') === 'true',
+        viewport: null,
+        args: [
+          '--disable-save-password-bubble',
+          '--disable-features=PasswordLeakDetection,PasswordManagerOnboarding',
+        ],
+      });
+      context.setDefaultTimeout(Number(this.config.get<string>('AIS_PAGE_TIMEOUT_MS') ?? 300_000));
+      context.setDefaultNavigationTimeout(Number(this.config.get<string>('AIS_NAVIGATION_TIMEOUT_MS') ?? 300_000));
+      this.contexts.set(accountId, context);
+    }
+    return context.pages()[0] ?? context.newPage();
+  }
+
+  private async login(page: Page, accountId: string): Promise<void> {
+    const credentials = await this.credentialVault.get(accountId);
+    if (!credentials) throw new AbuSessionRequiredError();
+    await page.locator('input[name="login"]').fill(credentials.login);
+    await page.locator('input[name="password"]').fill(credentials.password);
+    await this.throttle();
+    await page.locator('button[type="submit"]').click();
+    const loginTimeout = Number(this.config.get<string>('AIS_LOGIN_TIMEOUT_MS') ?? 90_000);
+    const authenticated = await page.locator('.box-body.box-profile')
+      .waitFor({ state: 'visible', timeout: loginTimeout })
+      .then(() => true)
+      .catch(() => false);
+    if (!authenticated) {
+      throw new AbuCredentialsRejectedError();
+    }
+  }
+
+  private async throttle(): Promise<void> {
+    const minimum = Number(this.config.get<string>('AIS_MIN_REQUEST_INTERVAL_MS') ?? 1200);
+    const wait = Math.max(0, this.lastRequestAt + minimum - Date.now());
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async readDashboardCourses(page: Page): Promise<CourseSnapshot[]> {
+    const names = await page.locator('table td[colspan="10"]').allTextContents();
+    return names.map(normalizeText).filter((name) => /\([A-ZА-Я0-9]+\s*\d+\)$/i.test(name)).map((name) => ({
+      externalRef: `dashboard-${stableExternalRef([name])}`,
+      name,
+    }));
+  }
+
+  private async readSchedule(page: Page, courses: CourseSnapshot[], currentWeek: number): Promise<ScheduleEventSnapshot[]> {
+    const events: ScheduleEventSnapshot[] = [];
+    const weekButton = page.getByRole('button', { name: String(currentWeek), exact: true });
+    if (!(await weekButton.count())) return events;
+    await this.throttle();
+    await weekButton.click();
+    await page.waitForTimeout(350);
+    const monday = new Date();
+    const day = monday.getDay() || 7;
+    monday.setDate(monday.getDate() - day + 1);
+    monday.setHours(0, 0, 0, 0);
+    for (let dayIndex = 0; dayIndex < WEEKDAYS.length; dayIndex += 1) {
+      const dayLink = page.getByRole('link', { name: WEEKDAYS[dayIndex], exact: true }).last();
+      if (!(await dayLink.count())) continue;
+      await this.throttle();
+      await dayLink.click();
+      await page.waitForTimeout(250);
+      const rows = await page.locator('table tr').allTextContents();
+      for (const row of rows) {
+        const text = normalizeText(row);
+        const match = text.match(/^\d+\s+(\d{2}:\d{2})\s+-\s+(\d{2}:\d{2})\s+(.+?)\s+\([A-ZА-Я]\)/i);
+        if (!match) continue;
+        const course = courses.find((candidate) => text.includes(candidate.name.replace(/\s*\([^)]*\)$/, '')));
+        if (!course) continue;
+        const date = new Date(monday);
+        date.setDate(monday.getDate() + dayIndex);
+        const [startHour, startMinute] = match[1]!.split(':').map(Number);
+        const [endHour, endMinute] = match[2]!.split(':').map(Number);
+        const startsAt = new Date(date); startsAt.setHours(startHour!, startMinute!, 0, 0);
+        const endsAt = new Date(date); endsAt.setHours(endHour!, endMinute!, 0, 0);
+        events.push({
+          externalRef: `schedule-${stableExternalRef([course.externalRef, startsAt.toISOString(), endsAt.toISOString()])}`,
+          courseRef: course.externalRef,
+          startsAt,
+          endsAt,
+        });
+      }
+    }
+    return events;
+  }
+
+  private async openJournal(page: Page, onProgress?: SyncProgress): Promise<void> {
+    const disciplineSelector = page.getByText('Выберите Вашу дисциплину', { exact: true }).first();
+    if (await disciplineSelector.isVisible().catch(() => false)) return;
+
+    const interactiveTargets = page.locator('a, button, [role="link"], [role="button"]');
+    const journalTargets = interactiveTargets.filter({ hasText: /Электронный журнал/i });
+    const journalLink = journalTargets
+      .filter({ visible: true })
+      .first();
+    if (!(await journalLink.isVisible().catch(() => false))) {
+      const studyLink = interactiveTargets.filter({ hasText: /^\s*Обучение\s*$/i })
+        .filter({ visible: true })
+        .first();
+      if (await studyLink.isVisible().catch(() => false)) {
+        await this.throttle();
+        await studyLink.click();
+        await journalLink.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => undefined);
+      }
+    }
+
+    if (await journalLink.isVisible().catch(() => false)) {
+      await onProgress?.('Открываю электронный журнал');
+      await this.throttle();
+      await journalLink.click();
+      await disciplineSelector.waitFor({
+        state: 'visible',
+        timeout: Number(this.config.get<string>('AIS_PAGE_TIMEOUT_MS') ?? 300_000),
+      });
+      return;
+    }
+
+    // The submenu is server-rendered but Platonus sometimes ignores the
+    // expand animation click. Invoking the already matched read-only journal
+    // target is deterministic and does not touch any form or mutation action.
+    if (await journalTargets.count()) {
+      await onProgress?.('Открываю электронный журнал');
+      await this.throttle();
+      await journalTargets.first().evaluate((element) => (element as HTMLElement).click());
+      await disciplineSelector.waitFor({
+        state: 'visible',
+        timeout: Number(this.config.get<string>('AIS_PAGE_TIMEOUT_MS') ?? 300_000),
+      });
+      return;
+    }
+
+    await this.navigator.navigate(page, {
+      goal: 'Открыть электронный журнал обучения',
+      expected: disciplineSelector,
+      semanticHints: ['Электронный журнал', 'Обучение'],
+      onProgress,
+    });
+  }
+
+  private async readJournal(
+    page: Page,
+    dashboardCourses: CourseSnapshot[],
+    onProgress: SyncProgress | undefined,
+    options: UniversityReadOptions,
+  ): Promise<{
+    currentWeek: number;
+    courses: CourseSnapshot[];
+    weeks: WeekSnapshot[];
+    assignments: AssignmentSnapshot[];
+  }> {
+    await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+    const menuNames = (await page.getByRole('menuitem').allTextContents()).map(normalizeText).filter(Boolean);
+    await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+    const discoveredNames = menuNames.length ? menuNames : dashboardCourses.map((course) => course.name.replace(/\s*\([^)]*\)$/, ''));
+    const courseNames = this.orderCourseNames(discoveredNames);
+    const courses: CourseSnapshot[] = [];
+    const assignments: AssignmentSnapshot[] = [];
+    let currentWeek = 1;
+    let weeks: WeekSnapshot[] = [];
+
+    for (const [courseIndex, name] of courseNames.entries()) {
+      await onProgress?.(`Читаю дисциплину ${courseIndex + 1} из ${courseNames.length}`);
+      await this.throttle();
+      await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+      await page.getByRole('menuitem', { name, exact: true }).click();
+      await page.locator('#journaltabletab').waitFor({ state: 'visible' });
+      await page.waitForFunction((courseName) => {
+        const text = (document.querySelector('#main')?.textContent ?? '').replace(/\s+/g, ' ');
+        return text.includes(String(courseName));
+      }, name);
+      const mainText = await page.locator('#main').innerText();
+      const journalMatch = mainText.match(/([^\n]+)\s+журнал №\s*(\d+)/i);
+      const dashboardCourse = dashboardCourses.find((course) => course.name.replace(/\s*\([^)]*\)$/, '') === name);
+      const courseRef = dashboardCourse?.externalRef ?? `course-${stableExternalRef([name])}`;
+      const ratingMatch = mainText.match(/Рейтинг\s+(\d+)\s+недели/i);
+      currentWeek = ratingMatch ? Number(ratingMatch[1]) : currentWeek;
+      const weekNumbers = (await page.locator('#weeknumber li').allTextContents()).map((value) => Number(normalizeText(value))).filter(Boolean);
+      weeks = weekNumbers.map((number) => ({ externalRef: `week-${number}`, number, current: number === currentWeek }));
+      courses.push({
+        externalRef: courseRef,
+        name,
+        teacherRef: journalMatch?.[1] ? `teacher-${stableExternalRef([normalizeText(journalMatch[1])])}` : undefined,
+      });
+
+      const contentObservations: Array<{ week: number; titles: string[]; details: Map<string, string> }> = [];
+      for (const week of activePeriodWeeks(currentWeek)) {
+        await onProgress?.(`Дисциплина ${courseIndex + 1} из ${courseNames.length}: проверяю ${week}-ю неделю`);
+        const weekLink = page.locator(`#li-${week} a`);
+        if (!(await weekLink.count())) continue;
+        await this.throttle();
+        await this.navigator.navigate(page, {
+          goal: 'Вернуться в журнал дисциплины',
+          expected: page.locator('#journaltabletab').first(),
+          semanticHints: ['Журнал'],
+          onProgress,
+        });
+        await this.throttle();
+        await weekLink.click();
+        await this.waitForWeekContent(page, week);
+        // The journal keeps old/hidden AJAX fragments in the DOM. Reading every
+        // <strong> used to attach an assignment from another week (or course) to
+        // the currently requested week. Only visible linked content belongs to
+        // the week whose heading was verified by waitForWeekContent().
+        const contentTitles = (await page.locator('#journaltabletab a:visible strong:visible').allTextContents())
+          .map(normalizeText)
+          .filter((title) => contentType(title) !== undefined);
+        const details = await this.readContentDetails(
+          page,
+          week,
+          contentTitles,
+          !options.disabledLabCourseRefs?.has(courseRef),
+        );
+        contentObservations.push({ week, titles: contentTitles, details });
+      }
+
+      await this.throttle();
+      const sentLink = page.getByText('Отправленные', { exact: true }).first();
+      await this.navigator.navigate(page, {
+        goal: 'Открыть раздел сообщений',
+        expected: sentLink,
+        semanticHints: ['Сообщения'],
+        onProgress,
+      });
+      await this.throttle();
+      await onProgress?.(`Дисциплина ${courseIndex + 1} из ${courseNames.length}: читаю отправленные сообщения`);
+      // "Отправленные" is already visible while Inbox is active, so using the
+      // link itself as an expected navigation result returns too early. Click
+      // the folder explicitly and verify the sent-only "Получатель" column.
+      await sentLink.click();
+      const sentTable = page.locator('#tab_3-2 table:visible').first();
+      await sentTable.getByText('Получатель', { exact: true }).waitFor({
+        state: 'visible',
+        timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000),
+      });
+      const sent = await this.readSentMessages(page);
+      for (const observation of contentObservations) {
+        assignments.push(...parseContentAssignments(
+          courseRef,
+          observation.week,
+          observation.titles,
+          sent,
+          observation.details,
+        ));
+      }
+
+      await this.throttle();
+      await this.navigator.navigate(page, {
+        goal: 'Открыть список самостоятельных работ СРО только для чтения',
+        expected: page.locator('#tab_2-2').first(),
+        semanticHints: ['СРО'],
+        onProgress,
+      });
+      const sroAssignments = parseSroText(courseRef, await page.locator('#tab_2-2').innerText());
+      for (const assignment of sroAssignments) {
+        if (assignment.grade !== undefined || assignment.weekNumber > currentWeek) continue;
+        const detail = page.locator('#tab_2-2 a').filter({ hasText: `${assignment.weekNumber} неделя` });
+        if ((await detail.count()) !== 1) continue;
+        await this.throttle();
+        await detail.click();
+        await page.locator('#myfiles').waitFor({ state: 'attached' });
+        await page.waitForTimeout(Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 3_000));
+        const history = normalizeText(await page.locator('#myfiles').innerText());
+        assignment.submissionState = history ? 'CONFIRMED' : 'ABSENT';
+        assignment.submitted = Boolean(history);
+        await page.getByText('Close', { exact: true }).click();
+      }
+      assignments.push(...sroAssignments);
+    }
+    return { currentWeek, courses, weeks, assignments };
+  }
+
+  private async waitForWeekContent(page: Page, week: number): Promise<void> {
+    // Some courses have no weekly block and therefore no "N учебная неделя"
+    // heading. The selected button is still painted with Bootstrap's primary
+    // class, so accept either that marker or the matching visible heading.
+    await page.waitForFunction((weekNumber) => {
+      const item = document.querySelector(`#li-${weekNumber}`);
+      const link = item?.querySelector('a');
+      const marker = `${item?.className ?? ''} ${link?.className ?? ''}`.toLowerCase();
+      const selected = /(?:active|selected|primary)/.test(marker)
+        || link?.getAttribute('aria-selected') === 'true'
+        || link?.getAttribute('aria-current') === 'true';
+      const visibleText = (document.querySelector('#journaltabletab') as HTMLElement | null)?.innerText ?? '';
+      const displayedWeek = visibleText.replace(/\s+/g, ' ')
+        .match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i)?.[1];
+      return selected || Number(displayedWeek) === weekNumber;
+    }, week, {
+      timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000),
+    });
+    await page.waitForTimeout(Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 3_000));
+
+    const visibleText = normalizeText(await page.locator('#journaltabletab').innerText().catch(() => ''));
+    const displayedWeek = Number(visibleText.match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i)?.[1]);
+    if (displayedWeek && displayedWeek !== week) {
+      throw new AbuReadTimeoutError(`переключение на ${week}-ю неделю (AIS показывает ${displayedWeek}-ю)`);
+    }
+  }
+
+  private orderCourseNames(courseNames: string[]): string[] {
+    const priority = (this.config.get<string>('AIS_PRIORITY_COURSE_NAMES') ?? 'Архитектура системы блокчейн')
+      .split(',').map(normalizeText).filter(Boolean);
+    return courseNames.map((name, index) => ({ name, index }))
+      .sort((left, right) => {
+        const leftPriority = priority.findIndex((value) => normalizeText(left.name).toLowerCase().includes(value.toLowerCase()));
+        const rightPriority = priority.findIndex((value) => normalizeText(right.name).toLowerCase().includes(value.toLowerCase()));
+        const leftRank = leftPriority === -1 ? Number.MAX_SAFE_INTEGER : leftPriority;
+        const rightRank = rightPriority === -1 ? Number.MAX_SAFE_INTEGER : rightPriority;
+        return leftRank - rightRank || left.index - right.index;
+      }).map(({ name }) => name);
+  }
+
+  private async readSentMessages(page: Page): Promise<SentMessageObservation[]> {
+    const rows = page.locator('#tab_3-2 table tbody tr');
+    const summaries = parseSentMessageRows(await rows.allTextContents());
+    const limit = Math.min(summaries.length, Number(this.config.get<string>('AIS_SENT_MESSAGE_DETAIL_LIMIT') ?? 50));
+    for (let index = 0; index < limit; index += 1) {
+      const summary = summaries[index]!;
+      const row = page.locator(`#mail-${summary.externalRef}`);
+      if (!(await row.count())) continue;
+      try {
+        await row.locator('td').first().click({ force: true });
+        await page.waitForFunction(() => {
+          const text = document.querySelector('#inboxmail')?.textContent ?? '';
+          return text.replace(/\s+/g, ' ').trim().length > 0;
+        }, undefined, { timeout: Number(this.config.get<string>('AIS_MESSAGE_DETAIL_TIMEOUT_MS') ?? 60_000) });
+        const container = page.locator('#inboxmail');
+        summary.body = normalizeText(await container.innerText());
+        summary.resourceTexts = (await this.contentExtractor.extractLinkedResources(page, container))
+          .map((resource) => resource.text);
+      } catch {
+        // The row summary remains usable when an old message detail cannot be opened.
+      }
+      if (index + 1 < limit) {
+        await page.getByText('Отправленные', { exact: true }).click();
+        await page.locator('#tab_3-2 table tbody tr').first().waitFor({ state: 'visible' }).catch(() => undefined);
+      }
+    }
+    return summaries;
+  }
+
+  private async readContentDetails(
+    page: Page,
+    week: number,
+    rawTitles: string[],
+    analyzeLabs: boolean,
+  ): Promise<Map<string, string>> {
+    const titles = rawTitles.map(normalizeText).filter((title) => {
+      const type = contentType(title);
+      return type === 'SRSP' || (type === 'LAB' && analyzeLabs);
+    });
+    const details = new Map<string, string>();
+    for (const title of titles) {
+      const anchor = page.locator('#journaltabletab a').filter({ hasText: title }).first();
+      if (!(await anchor.count())) continue;
+      const before = normalizeText(await page.locator('#contentdetdiv').innerText().catch(() => ''));
+      await anchor.click();
+      await page.waitForFunction((previous) => {
+        const current = (document.querySelector('#contentdetdiv')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        return current.length > 0 && current !== previous;
+      }, before, { timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000) })
+        .catch(() => undefined);
+      const container = page.locator('#contentdetdiv');
+      const body = normalizeText(await container.innerText().catch(() => title));
+      const resources = await this.contentExtractor.extractLinkedResources(page, container);
+      details.set(title, normalizeText([body, ...resources.map((resource) => resource.text)].join(' ')));
+
+      const weekLink = page.locator(`#li-${week} a`);
+      if (await weekLink.count()) {
+        await weekLink.click();
+        await this.waitForWeekContent(page, week);
+      }
+    }
+    return details;
+  }
+}
