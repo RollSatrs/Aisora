@@ -83,6 +83,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     bot.command('clarification', async (ctx) => this.replyTaskCategory(ctx, this.accountId(ctx), 'CLARIFICATION'));
     bot.command('labfocus', async (ctx) => this.replyLabFocus(ctx, this.accountId(ctx)));
     bot.command('sro', async (ctx) => this.replyTaskType(ctx, this.accountId(ctx), 'SRO'));
+    bot.command('srocheck', async (ctx) => this.replySroReadiness(ctx, this.accountId(ctx)));
     bot.command('srsp', async (ctx) => this.replyTaskType(ctx, this.accountId(ctx), 'SRSP'));
     bot.command('labs', async (ctx) => this.replyTaskType(ctx, this.accountId(ctx), 'LAB'));
     bot.command('status', async (ctx) => {
@@ -212,6 +213,25 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   private async replyTaskType(ctx: Context, accountId: string, type: AssignmentType): Promise<void> {
     const { tasks, currentWeek } = await this.syncService.taskContext(accountId);
     for (const message of formatTaskType(tasks, currentWeek, type)) await ctx.reply(message);
+  }
+
+  /** Read-only diagnostics for the SRO matcher; does not open a file picker. */
+  private async replySroReadiness(ctx: Context, accountId: string): Promise<void> {
+    const { tasks } = await this.syncService.taskContext(accountId);
+    const pending = tasks.filter((task) => task.type === 'SRO' && !task.submitted && task.grade === undefined);
+    if (!pending.length) {
+      await ctx.reply('Не найдено СРО, ожидающих сдачи.');
+      return;
+    }
+    for (const task of pending) {
+      const parts = task.content.split('Условие из журнала:');
+      const condition = parts.length > 1 ? parts.slice(1).join('Условие из журнала:').trim() : '';
+      const label = `📘 ${task.courseName ?? task.courseRef}\n📝 СРО, неделя ${task.weekNumber}`;
+      const result = condition
+        ? `✅ Условие сопоставлено с карточкой сдачи.\n${condition.slice(0, 1100)}${condition.length > 1100 ? '…' : ''}`
+        : '⚠️ Условие не удалось однозначно сопоставить; автоматическая отправка запрещена.';
+      await ctx.reply(`${label}\n${result}\n\n🔒 Режим проверки: без отправки файлов.`);
+    }
   }
 
   private async replyLabFocus(ctx: Context, accountId: string): Promise<void> {
