@@ -31,6 +31,8 @@ import {
 } from './abu-parsers';
 import { AisContentExtractor } from './ais-content-extractor';
 import { extractSroRequirements, matchSroBrief, type WeeklySroBrief } from './sro-assignment-matcher';
+import { classifySroHistory } from './sro-history';
+import { AisHtmlDiagnostics } from './ais-html-diagnostics';
 import type { SyncProgress, UniversityAdapter, UniversityReadOptions } from './university-adapter';
 
 const AIS_URL = 'https://ais.semuniver.kz/login.php';
@@ -69,6 +71,7 @@ export class AbuReadTimeoutError extends RequestTimeoutException {
 export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy {
   readonly key = 'abu-ais';
   private readonly logger = new Logger(AbuUniversityAdapter.name);
+  private get htmlDiagnostics(): AisHtmlDiagnostics { return new AisHtmlDiagnostics(this.config); }
   private readonly contexts = new Map<string, BrowserContext>();
   private operation = Promise.resolve();
   private lastRequestAt = 0;
@@ -112,7 +115,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       await onProgress?.('Читаю задания, оценки и отправки');
       const journal = await this.withStage(
         'чтение заданий и отправок',
-        () => this.readJournal(page, dashboardCourses, onProgress, options),
+        () => this.readJournal(page, dashboardCourses, onProgress, options, accountId),
       );
       await this.throttle();
       await onProgress?.('Читаю расписание');
@@ -303,6 +306,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     dashboardCourses: CourseSnapshot[],
     onProgress: SyncProgress | undefined,
     options: UniversityReadOptions,
+    diagnosticAccountId: string,
   ): Promise<{
     currentWeek: number;
     courses: CourseSnapshot[];
@@ -372,6 +376,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
             .filter((title) => contentType(title) !== undefined || /^СРО(?:\s|№|\d|[.:]|$)/i.test(title)),
         )];
         this.logger.log(`SRO discovery course=${courseIndex + 1} week=${week}: links=${contentTitles.length}, sro=${contentTitles.filter((title) => /^СРО(?:\s|№|\d|[.:]|$)/i.test(title)).length}`);
+        if (!contentTitles.some((title) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title))) {
+          await this.htmlDiagnostics.capture(diagnosticAccountId, courseRef, week, 'weekly-content', page.locator('#journaltabletab'));
+        }
         const details = await this.readContentDetails(
           page,
           week,
@@ -442,13 +449,33 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         const detail = page.locator('#tab_2-2 a').filter({ hasText: `${assignment.weekNumber} неделя` });
         if ((await detail.count()) !== 1) continue;
         await this.throttle();
-        await detail.click();
-        await page.locator('#myfiles').waitFor({ state: 'attached' });
-        await page.waitForTimeout(Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 1_000));
-        const history = normalizeText(await page.locator('#myfiles').innerText());
-        assignment.submissionState = history ? 'CONFIRMED' : 'ABSENT';
-        assignment.submitted = Boolean(history);
-        await page.getByText('Close', { exact: true }).click();
+        try {
+          await detail.click();
+          const container = page.locator('#myfiles');
+          const timeout = Number(this.config.get<string>('AIS_SRO_HISTORY_TIMEOUT_MS') ?? 10_000);
+          await container.waitFor({ state: 'visible', timeout });
+          await page.waitForFunction(() => {
+            const node = document.querySelector('#myfiles');
+            if (!node) return false;
+            return Boolean(node.querySelector('input[type="file"]') ||
+              [...node.querySelectorAll('a')].some((a) => /\\.(?:docx?|pdf|xlsx?|pptx?|txt|rtf|zip|rar|7z)\\b/i.test(a.textContent ?? '')));
+          }, undefined, { timeout }).catch(() => undefined);
+          const ready = (await container.locator('input[type="file"]').count()) > 0;
+          const before = await container.locator('a').allTextContents();
+          await page.waitForTimeout(Number(this.config.get<string>('AIS_SRO_HISTORY_SETTLE_MS') ?? 600));
+          const after = await container.locator('a').allTextContents();
+          const evidence = classifySroHistory(after, ready, JSON.stringify(before) === JSON.stringify(after));
+          assignment.submissionState = evidence.status;
+          assignment.submitted = evidence.status === 'CONFIRMED';
+          this.logger.log(`SRO history course=${courseIndex + 1} week=${assignment.weekNumber}: ${evidence.status} files=${evidence.files.length}`);
+          await this.htmlDiagnostics.capture(diagnosticAccountId, courseRef, assignment.weekNumber, 'sro-files', container);
+        } catch (error) {
+          assignment.submissionState = 'UNKNOWN';
+          assignment.submitted = false;
+          this.logger.warn(`SRO history unavailable course=${courseIndex + 1} week=${assignment.weekNumber}: ${error instanceof Error ? error.name : 'unknown'}`);
+        } finally {
+          await page.getByText('Close', { exact: true }).click({ timeout: 2_000 }).catch(() => undefined);
+        }
       }
       assignments.push(...sroAssignments);
     }
