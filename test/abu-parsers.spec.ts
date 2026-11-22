@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { CredentialVaultService } from '../src/auth/credential-vault.service';
 import type { AdaptiveAisNavigator } from '../src/university/adaptive-ais-navigator';
 import type { AisContentExtractor } from '../src/university/ais-content-extractor';
-import { isRelevantSentSubject, parseContentAssignments, parseSentMessageRows, parseSroText } from '../src/university/abu-parsers';
+import { futureSroWeeks, independentWorkType, isRelevantSentSubject, parseContentAssignments, parseSentMessageRows, parseSroText } from '../src/university/abu-parsers';
 import { AbuUniversityAdapter, AutomationPermissionRequiredError } from '../src/university/abu-university.adapter';
 
 describe('ABU AIS observed DOM parsers', () => {
@@ -25,6 +25,25 @@ describe('ABU AIS observed DOM parsers', () => {
     expect(tasks).toHaveLength(2);
     expect(tasks[0]).toMatchObject({ weekNumber: 7, submitted: true, grade: '82' });
     expect(tasks[1]).toMatchObject({ weekNumber: 10, submitted: false, submissionState: 'UNKNOWN', grade: undefined });
+  });
+
+  it('recognizes СРО and СРС independent of assignment ordinal or punctuation', () => {
+    for (const name of ['СРО №4. Масштабирование', 'СРС 4', 'СРС4', 'СРС: Таблица IoT', 'Тема: СРО — робототехника']) {
+      expect(independentWorkType(name)).toBe('SRO');
+    }
+    for (const name of ['СРСП 4', 'СРОП №6', 'Тема: СРОП — Деструктор']) {
+      expect(independentWorkType(name)).toBe('SRSP');
+    }
+    expect(independentWorkType('Лекция 13')).toBeUndefined();
+    expect(independentWorkType('СРОП 4')).not.toBe('SRO');
+  });
+
+  it('scans published future SRO-card weeks without scanning all future weeks', () => {
+    const card = (weekNumber: number, source: 'SRO_TAB' | 'CONTENT' = 'SRO_TAB', grade?: string) =>
+      ({ type: 'SRO' as const, source, weekNumber, grade });
+    expect(futureSroWeeks(12, [9, 10, 11, 12, 13, 14, 15], [
+      card(10), card(13), card(13), card(14, 'CONTENT'), card(15), card(14, 'SRO_TAB', '90'),
+    ])).toEqual([13, 15]);
   });
 
   it('only opens sent-message bodies that can be evidence for SRSP/SROP or lab work', () => {
