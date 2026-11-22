@@ -22,6 +22,7 @@ import type {
 import { AdaptiveAisNavigator } from './adaptive-ais-navigator';
 import {
   contentType,
+  isRelevantSentSubject,
   normalizeText,
   parseContentAssignments,
   parseSentMessageRows,
@@ -575,31 +576,44 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   }
 
   private async readSentMessages(page: Page): Promise<SentMessageObservation[]> {
+    const startedAt = Date.now();
     const rows = page.locator('#tab_3-2 table tbody tr');
     const summaries = parseSentMessageRows(await rows.allTextContents());
     const limit = Math.min(summaries.length, Number(this.config.get<string>('AIS_SENT_MESSAGE_DETAIL_LIMIT') ?? 50));
-    for (let index = 0; index < limit; index += 1) {
-      const summary = summaries[index]!;
+    // Subject matching already requires СРСП/СРОП or Лаб in the subject.
+    // Unrelated messages can stay as summaries and do not need a detail click.
+    const relevant = summaries.slice(0, limit).filter((row) => isRelevantSentSubject(row.subject));
+    const timeout = Number(this.config.get<string>('AIS_MESSAGE_DETAIL_TIMEOUT_MS') ?? 7_000);
+    let visited = 0;
+    let failed = 0;
+
+    for (const [index, summary] of relevant.entries()) {
       const row = page.locator(`#mail-${summary.externalRef}`);
       if (!(await row.count())) continue;
       try {
-        await row.locator('td').first().click({ force: true });
-        await page.waitForFunction(() => {
-          const text = document.querySelector('#inboxmail')?.textContent ?? '';
-          return text.replace(/\s+/g, ' ').trim().length > 0;
-        }, undefined, { timeout: Number(this.config.get<string>('AIS_MESSAGE_DETAIL_TIMEOUT_MS') ?? 60_000) });
+        const before = normalizeText(await page.locator('#inboxmail').innerText().catch(() => ''));
+        await row.locator('td').first().click({ force: true, timeout });
+        await page.waitForFunction((previous) => {
+          const text = (document.querySelector('#inboxmail')?.textContent ?? '').replace(/\\s+/g, ' ').trim();
+          return text.length > 0 && text !== previous;
+        }, before, { timeout });
         const container = page.locator('#inboxmail');
         summary.body = normalizeText(await container.innerText());
-        summary.resourceTexts = (await this.contentExtractor.extractLinkedResources(page, container))
-          .map((resource) => resource.text);
+        summary.resourceTexts = (await this.contentExtractor.extractLinkedResources(
+          page, container, Number(this.config.get<string>('AIS_MESSAGE_ATTACHMENT_TIMEOUT_MS') ?? 15_000),
+        )).map((resource) => resource.text);
+        visited += 1;
       } catch {
-        // The row summary remains usable when an old message detail cannot be opened.
+        // Preserve the summary, but do not mistake a stale dialog for evidence.
+        failed += 1;
       }
-      if (index + 1 < limit) {
-        await page.getByText('Отправленные', { exact: true }).click();
-        await page.locator('#tab_3-2 table tbody tr').first().waitFor({ state: 'visible' }).catch(() => undefined);
+      if (index + 1 < relevant.length) {
+        await page.getByText('Отправленные', { exact: true }).click({ timeout });
+        await page.locator('#tab_3-2 table tbody tr').first()
+          .waitFor({ state: 'visible', timeout }).catch(() => undefined);
       }
     }
+    this.logger.log(`AIS sent messages total=${summaries.length} eligible=${relevant.length} read=${visited} failed=${failed} elapsed_ms=${Date.now() - startedAt}`);
     return summaries;
   }
 
