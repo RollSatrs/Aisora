@@ -327,7 +327,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     });
     await page.waitForFunction(() => {
       const element = [...document.querySelectorAll('a')].find((a) =>
-        (a.textContent ?? '').replace(/\\s+/g, ' ').trim() === 'Выберите Вашу дисциплину',
+        (a.textContent ?? '').replace(/\s+/g, ' ').trim() === 'Выберите Вашу дисциплину',
       );
       return Boolean(element && element.getAttribute('aria-disabled') !== 'true' &&
         !element.hasAttribute('disabled'));
