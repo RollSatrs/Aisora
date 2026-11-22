@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { CredentialVaultService } from '../src/auth/credential-vault.service';
 import type { AdaptiveAisNavigator } from '../src/university/adaptive-ais-navigator';
 import type { AisContentExtractor } from '../src/university/ais-content-extractor';
-import { parseContentAssignments, parseSentMessageRows, parseSroText } from '../src/university/abu-parsers';
+import { isRelevantSentSubject, parseContentAssignments, parseSentMessageRows, parseSroText } from '../src/university/abu-parsers';
 import { AbuUniversityAdapter, AutomationPermissionRequiredError } from '../src/university/abu-university.adapter';
 
 describe('ABU AIS observed DOM parsers', () => {
@@ -25,6 +25,15 @@ describe('ABU AIS observed DOM parsers', () => {
     expect(tasks).toHaveLength(2);
     expect(tasks[0]).toMatchObject({ weekNumber: 7, submitted: true, grade: '82' });
     expect(tasks[1]).toMatchObject({ weekNumber: 10, submitted: false, submissionState: 'UNKNOWN', grade: undefined });
+  });
+
+  it('only opens sent-message bodies that can be evidence for SRSP/SROP or lab work', () => {
+    expect(isRelevantSentSubject('СРСП 7 неделя')).toBe(true);
+    expect(isRelevantSentSubject('СРОП №3')).toBe(true);
+    expect(isRelevantSentSubject('Лабораторная работа №5')).toBe(true);
+    expect(isRelevantSentSubject('СРО №3')).toBe(false);
+    expect(isRelevantSentSubject('Лекция 8')).toBe(false);
+    expect(isRelevantSentSubject('Оповещение о расписании')).toBe(false);
   });
 
   it('matches sent message evidence to SRSP and laboratory content', () => {
