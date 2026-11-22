@@ -22,6 +22,7 @@ import type {
 import { AdaptiveAisNavigator } from './adaptive-ais-navigator';
 import {
   contentType,
+  independentWorkType,
   isRelevantSentSubject,
   normalizeText,
   parseContentAssignments,
@@ -418,10 +419,10 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         const contentTitles = [...new Set(
           (await page.locator('#journaltabletab a:visible').allTextContents())
             .map(normalizeText)
-            .filter((title) => contentType(title) !== undefined || /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title)),
+            .filter((title) => contentType(title) !== undefined || independentWorkType(title) === 'SRO'),
         )];
-        this.logger.log(`SRO discovery course=${courseIndex + 1} week=${week}: links=${contentTitles.length}, sro=${contentTitles.filter((title) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title)).length}`);
-        if (!contentTitles.some((title) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title))) {
+        this.logger.log(`SRO discovery course=${courseIndex + 1} week=${week}: links=${contentTitles.length}, sro=${contentTitles.filter((title) => independentWorkType(title) === 'SRO').length}`);
+        if (!contentTitles.some((title) => independentWorkType(title) === 'SRO')) {
           await this.htmlDiagnostics.capture(diagnosticAccountId, courseRef, week, 'weekly-content', page.locator('#journaltabletab'));
         }
         const details = await this.readContentDetails(
@@ -432,7 +433,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         );
         contentObservations.push({ week, titles: contentTitles, details });
         this.logger.log(`SRO detail reading course=${courseIndex + 1} week=${week}: opened=${details.size}`);
-        for (const title of contentTitles.filter((value) => /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(value))) {
+        for (const title of contentTitles.filter((value) => independentWorkType(value) === 'SRO')) {
           const content = details.get(title);
           if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
         }
@@ -476,6 +477,48 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         onProgress,
       });
       const sroAssignments = parseSroText(courseRef, await page.locator('#tab_2-2').innerText());
+
+      // Future weeks can be published in AIS even when the current *rating*
+      // week is still 12. Only scan future weeks with a real, ungraded SRO
+      // destination card. This keeps additional requests targeted.
+      const futureSroWeeks = [...new Set(sroAssignments
+        .filter((assignment) => assignment.weekNumber > currentWeek
+          && assignment.grade === undefined
+          && weekNumbers.includes(assignment.weekNumber))
+        .map((assignment) => assignment.weekNumber))].sort((a, b) => a - b);
+      if (futureSroWeeks.length) {
+        await this.navigator.navigate(page, {
+          goal: 'Вернуться в журнал для чтения опубликованных СРО будущих недель',
+          expected: page.locator('#journaltabletab').first(),
+          semanticHints: ['Журнал'],
+          onProgress,
+        });
+        for (const week of futureSroWeeks) {
+          await onProgress?.(`Дисциплина ${courseIndex + 1} из ${courseNames.length}: проверяю СРО ${week}-й недели`);
+          const weekLink = page.locator(`#li-${week} a`);
+          if (!(await weekLink.count())) continue;
+          await this.throttle();
+          await weekLink.click();
+          await this.waitForWeekContent(page, week);
+          const titles = [...new Set(
+            (await page.locator('#journaltabletab a:visible').allTextContents())
+              .map(normalizeText)
+              .filter((title) => independentWorkType(title) === 'SRO'),
+          )];
+          const details = await this.readContentDetails(page, week, titles, false);
+          for (const title of titles) {
+            const content = details.get(title);
+            if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
+          }
+          this.logger.log(`SRO future course=${courseIndex + 1} week=${week}: discovered=${titles.length} read=${details.size}`);
+        }
+        await this.navigator.navigate(page, {
+          goal: 'Вернуться в СРО для проверки карточек сдачи',
+          expected: page.locator('#tab_2-2').first(),
+          semanticHints: ['СРО'],
+          onProgress,
+        });
+      }
       for (const assignment of sroAssignments) {
         const match = matchSroBrief(assignment, sroBriefs);
         if (match.status !== 'MATCHED') {
@@ -625,7 +668,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   ): Promise<Map<string, string>> {
     const titles = rawTitles.map(normalizeText).filter((title) => {
       const type = contentType(title);
-      return type === 'SRSP' || type === 'SRO' || (type === 'LAB' && analyzeLabs) || /^(?:СРО|СРС)(?:\s|№|\d|[.:]|$)/i.test(title);
+      return type === 'SRSP' || type === 'SRO' || (type === 'LAB' && analyzeLabs) || independentWorkType(title) === 'SRO';
     });
     const details = new Map<string, string>();
     for (const title of titles) {
