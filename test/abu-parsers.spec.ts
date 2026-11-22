@@ -66,6 +66,19 @@ describe('ABU AIS observed DOM parsers', () => {
     expect(lab[0]?.submitted).toBe(true);
   });
 
+  it('does not mistake SRSP/SROP task numbers for evidence of a sent submission', () => {
+    const subjects = parseSentMessageRows([
+      '1003 2026-11-15 10:00:00 Преподаватель СРОП №4',
+      '1004 2026-11-15 10:01:00 Преподаватель СРСП 11 неделя',
+    ]);
+    const [assignment] = parseContentAssignments('course', 13, ['СРСП №4. Новая тема'], subjects);
+    expect(assignment?.submitted).toBe(false);
+    const [sameWeek] = parseContentAssignments('course', 13, ['СРОП №6. Новая тема'], [
+      { externalRef: 'evidence', sentAt: '2026-11-22', subject: 'СРСП 13 неделя' },
+    ]);
+    expect(sameWeek?.submitted).toBe(true);
+  });
+
   it('treats recognized laboratory content without sent evidence as required and absent', () => {
     const [assignment] = parseContentAssignments('journal-1', 10, ['Лабораторная работа №8'], []);
     expect(assignment).toMatchObject({ requiredState: 'REQUIRED', submissionState: 'ABSENT', submitted: false });
