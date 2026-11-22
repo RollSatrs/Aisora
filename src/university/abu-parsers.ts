@@ -124,7 +124,7 @@ function messageMatches(
     if (!/срсп|сроп/i.test(value)) return false;
     // The ordinal №4 is not a week and cannot on its own confirm submission.
     // An explicit, different academic week is conflicting evidence.
-    const statedWeek = value.match(/(\\d{1,2})\\s*(?:-\\s*[яй])?\\s*недел[яи]/i)?.[1];
+    const statedWeek = value.match(/(\d{1,2})\s*(?:-\s*[яй])?\s*недел[яи]/i)?.[1];
     if (statedWeek && Number(statedWeek) !== week) return false;
     return weekMatches || (!statedWeek && similarContent);
   }
