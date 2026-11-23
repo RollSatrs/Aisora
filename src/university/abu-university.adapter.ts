@@ -70,6 +70,12 @@ export class AbuReadTimeoutError extends RequestTimeoutException {
   }
 }
 
+export class AbuAccessDeniedError extends ForbiddenException {
+  constructor() {
+    super('ABU AIS denied access to the cloud runner (HTTP 403). Ask the university about approved remote access.');
+  }
+}
+
 @Injectable()
 export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy {
   readonly key = 'abu-ais';
@@ -107,6 +113,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       const initialResponse = await this.withStage('открытие AIS', () => page.goto(AIS_URL, { waitUntil: 'domcontentloaded' }));
       if (this.config.get<string>('AIS_CLOUD_PAGE_DIAGNOSTICS') === 'true') {
         this.logger.warn(`AIS initial navigation: HTTP ${initialResponse?.status() ?? 'no-response'}; ${this.safeAisLocation(page)}`);
+      }
+      if (initialResponse?.status() === 403) {
+        throw new AbuAccessDeniedError();
       }
       await this.withStage('ожидание загрузки главной страницы', () => this.waitForHomeReady(page));
       if (await page.getByRole('button', { name: 'Войти', exact: true }).isVisible().catch(() => false)) {
