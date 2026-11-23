@@ -744,6 +744,11 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     // message identity, timestamp and subject, never by row index alone.
     const relevant = summaries.slice(0, limit).filter((row) => isRelevantSentSubject(row.subject));
     const timeout = Number(this.config.get<string>('AIS_MESSAGE_DETAIL_TIMEOUT_MS') ?? 7_000);
+    // Trace showed successful waits below 1.2 seconds, while eight stalled
+    // messages reached the full 60-second timeout. The shorter bound marks
+    // unverified content UNKNOWN, rather than trusting a stale dialog.
+    const staleWaitTimeout = this.config.get<string>('AIS_SYNC_ADAPTIVE_TIMEOUTS') === 'false'
+      ? timeout : Math.min(timeout, Number(this.config.get<string>('AIS_MESSAGE_STALE_WAIT_MAX_MS') ?? 10_000));
     let visited = 0;
     let failed = 0;
     let cached = 0;
@@ -793,7 +798,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           const text = (document.querySelector('#inboxmail')?.textContent ?? '')
             .replace(/\s+/g, ' ').trim();
           return text.length > 0 && text !== previousText;
-        }, before, { timeout });
+        }, before, { timeout: staleWaitTimeout });
         const container = page.locator('#inboxmail');
         const body = normalizeText(await container.innerText());
         if (!body || body === before) throw new Error('MessageBodyUnverified');
@@ -843,8 +848,14 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       await page.waitForFunction((previous) => {
         const current = (document.querySelector('#contentdetdiv')?.textContent ?? '').replace(/\s+/g, ' ').trim();
         return current.length > 0 && current !== previous;
-      }, before, { timeout: Number(this.config.get<string>('AIS_DETAIL_CHANGE_TIMEOUT_MS') ?? 8_000) })
-        .catch(() => undefined);
+      }, before, {
+        timeout: this.config.get<string>('AIS_SYNC_ADAPTIVE_TIMEOUTS') === 'false'
+          ? Number(this.config.get<string>('AIS_DETAIL_CHANGE_TIMEOUT_MS') ?? 8_000)
+          : Math.min(
+            Number(this.config.get<string>('AIS_DETAIL_CHANGE_TIMEOUT_MS') ?? 8_000),
+            Number(this.config.get<string>('AIS_DETAIL_STALE_WAIT_MAX_MS') ?? 4_000),
+          ),
+      }).catch(() => undefined);
       const container = page.locator('#contentdetdiv');
       const body = normalizeText(await container.innerText().catch(() => ''));
       // Do not attach stale content from a previous dialog to a new task.
