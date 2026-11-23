@@ -1,0 +1,36 @@
+name: AIS public page visual diagnostic
+
+# Manual, unauthenticated inspection of the initial university login URL.
+# Does not fetch encrypted credentials or run the academic sync service.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  visual-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Visit public AIS login page and capture diagnostic
+        run: node scripts/cloud-ais-visual-check.cjs
+      - name: Attach public pre-login screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-public-login-screenshot
+          path: artifacts/ais-public-check/initial-public-page.png
+          if-no-files-found: ignore
+          retention-days: 1
