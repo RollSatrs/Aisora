@@ -3,6 +3,23 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { BrowserContext, Locator, Page } from 'playwright';
 
+/**
+ * Static source-code locator patterns (never dynamic text from the AIS DOM).
+ * These help correlate report rows with Playwright calls in the adapter.
+ */
+const SAFE_LOCATOR_PATTERNS: Record<string, string> = {
+  'study-menu-open': 'visible link/button containing Обучение',
+  'journal-open': 'visible link/button containing Электронный журнал',
+  'course-menu-toggle': "getByRole('link', {name:'Выберите Вашу дисциплину'})",
+  'course-select-menuitem': "getByRole('menuitem', {name:<course>})",
+  'week-select': "locator('#li-<week> a')",
+  'content-details-open': "locator('#journaltabletab a:visible') matching title",
+  'sent-folder-open': "getByText('Отправленные', {exact:true})",
+  'sent-message-row-open': "locator('#mail-<id> td').first()",
+  'return-to-sent-folder': "getByText('Отправленные', {exact:true})",
+  'sro-history-open': "locator('#tab_2-2 a') containing week",
+};
+
 type DiagnosticEvent = {
   atMs: number;
   durationMs: number;
@@ -13,6 +30,7 @@ type DiagnosticEvent = {
   tag?: string;
   role?: string;
   errorType?: string;
+  locatorPattern?: string;
 };
 
 type NetCounters = {
@@ -96,6 +114,7 @@ export class SyncDiagnosticsRecorder {
     // Only structural metadata. Never read textContent, HTML, href, id,
     // values or data attributes (any of them may include student data).
     const matches = await locator.count().catch(() => undefined);
+    const locatorPattern = SAFE_LOCATOR_PATTERNS[label];
     const structure = await locator.first().evaluate((element) => ({
       tag: element.tagName.toLowerCase().slice(0, 15),
       role: ['button', 'link', 'menuitem', 'tab'].includes(element.getAttribute('role') ?? '')
@@ -104,12 +123,12 @@ export class SyncDiagnosticsRecorder {
     try {
       const result = await action();
       this.add('click', label, started, 'ok', {
-        matches, tag: structure?.tag, role: structure?.role,
+        matches, tag: structure?.tag, role: structure?.role, locatorPattern,
       });
       return result;
     } catch (error) {
       this.add('click', label, started, 'failed', {
-        matches, tag: structure?.tag, role: structure?.role,
+        matches, tag: structure?.tag, role: structure?.role, locatorPattern,
         errorType: error instanceof Error ? error.name : 'UnknownError',
       });
       throw error;
