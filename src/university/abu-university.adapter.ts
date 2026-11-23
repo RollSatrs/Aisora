@@ -128,7 +128,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       // Start AFTER login, excluding credentials from the trace.
       if (this.config.get<string>('AIS_SYNC_DIAGNOSTICS_ENABLED') === 'true') {
         try {
-          this.syncDiagnostics = await SyncDiagnosticsRecorder.start(page);
+          this.syncDiagnostics = await SyncDiagnosticsRecorder.start(page, {
+            traceEnabled: this.config.get<string>('AIS_SYNC_TRACE_ENABLED') !== 'false',
+          });
           this.logger.log('Local sync diagnostics started after authentication');
         } catch {
           this.logger.warn('Sync diagnostics unavailable; normal sync continues');
