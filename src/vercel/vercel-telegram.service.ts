@@ -274,6 +274,23 @@ export class VercelTelegramService {
       if (this.credentials.configured()) await this.credentials.cancel(ref).catch(() => undefined);
       await ctx.reply('Подключение отменено.');
     });
+    bot.command('disconnect', async (ctx) => {
+      const ref = this.accountRef(ctx);
+      if (!ref) {
+        await ctx.reply('🔒 Доступно только в личном чате.');
+        return;
+      }
+      if (!this.credentials.configured()) {
+        await ctx.reply('Хранилище учётных данных сейчас недоступно.');
+        return;
+      }
+      try {
+        await this.credentials.disconnect(ref);
+        await ctx.reply('✅ Сохранённые логин и пароль АИС удалены из облачного хранилища. Уже сохранённые задания останутся в Neon.');
+      } catch {
+        await ctx.reply('⚠️ Не удалось удалить данные сейчас. Повторите позже.');
+      }
+    });
     bot.on('message:text', async (ctx) => {
       if (await this.handleConnectInput(ctx)) return;
       await ctx.reply('☁️ Aisora Cloud. Доступны /ping, /connect, /sync, /status, /tasks и /srocheck.');
