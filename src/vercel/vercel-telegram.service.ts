@@ -23,6 +23,39 @@ export class VercelTelegramService {
       && this.config.get<string>('TELEGRAM_WEBHOOK_SECRET'));
   }
 
+  /**
+   * Register this project's webhook without copying the Telegram bot token
+   * into a browser URL, external HTTP client or repository.
+   * The operator supplies the existing webhook secret over same-origin HTTPS.
+   */
+  async registerWebhook(providedSecret: string | undefined): Promise<{ ok: true; webhookUrl: string }> {
+    const token = this.config.get<string>('TELEGRAM_BOT_TOKEN') ?? '';
+    const secret = this.config.get<string>('TELEGRAM_WEBHOOK_SECRET') ?? '';
+    if (!token || !secret) throw new ServiceUnavailableException('Telegram webhook is not configured');
+    if (!this.matchesSecret(providedSecret, secret)) throw new UnauthorizedException();
+
+    const domain = this.config.get<string>('AISORA_PUBLIC_URL')
+      ?? (this.config.get<string>('VERCEL_PROJECT_PRODUCTION_URL')
+        ? `https://${this.config.get<string>('VERCEL_PROJECT_PRODUCTION_URL')}`
+        : 'https://aisora-teal.vercel.app');
+    const url = new URL('/telegram/webhook', domain).toString();
+    if (!url.startsWith('https://')) throw new ServiceUnavailableException('HTTPS required');
+
+    const bot = this.getBot(token);
+    await bot.api.setWebhook(url, {
+      secret_token: secret,
+      allowed_updates: ['message'],
+      drop_pending_updates: true,
+    });
+    return { ok: true, webhookUrl: url };
+  }
+
+  private matchesSecret(provided: string | undefined, expectedSecret: string): boolean {
+    const supplied = Buffer.from(provided ?? '', 'utf8');
+    const expected = Buffer.from(expectedSecret, 'utf8');
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  }
+
   async handle(secretHeader: string | undefined, update: unknown): Promise<{ ok: true }> {
     const expectedSecret = this.config.get<string>('TELEGRAM_WEBHOOK_SECRET') ?? '';
     const token = this.config.get<string>('TELEGRAM_BOT_TOKEN') ?? '';
@@ -32,9 +65,7 @@ export class VercelTelegramService {
 
     // Telegram sets this header when setWebhook has a secret_token.
     // Never accept unauthenticated updates or reveal either secret.
-    const supplied = Buffer.from(secretHeader ?? '', 'utf8');
-    const expected = Buffer.from(expectedSecret, 'utf8');
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    if (!this.matchesSecret(secretHeader, expectedSecret)) {
       throw new UnauthorizedException();
     }
     if (!update || typeof update !== 'object' || !('update_id' in update)) {
