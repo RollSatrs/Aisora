@@ -93,7 +93,7 @@ export class SyncService {
       const stored: StoredAssignment = {
         ...safeItem,
         contentHash: hash,
-        status: resolveAssignmentStatus(item, snapshot.currentWeek),
+        status: resolveAssignmentStatus(safeItem, snapshot.currentWeek),
         versions: previous?.versions.includes(hash) ? previous.versions : [...(previous?.versions ?? []), hash],
         firstSeenAt: previous?.firstSeenAt ?? now,
         lastSeenAt: now,
