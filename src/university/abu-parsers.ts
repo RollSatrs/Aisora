@@ -140,6 +140,7 @@ export function parseContentAssignments(
   titles: string[],
   sent: SentMessageObservation[],
   detailsByTitle: ReadonlyMap<string, string> = new Map(),
+  sentScanComplete = true,
 ): AssignmentSnapshot[] {
   return titles.flatMap((rawTitle) => {
     const title = normalizeText(rawTitle);
@@ -157,7 +158,7 @@ export function parseContentAssignments(
       requiredState: 'REQUIRED',
       source: 'CONTENT',
       submitted,
-      submissionState: submitted ? 'CONFIRMED' : 'ABSENT',
+      submissionState: submitted ? 'CONFIRMED' : sentScanComplete ? 'ABSENT' : 'UNKNOWN',
     } satisfies AssignmentSnapshot];
   });
 }
