@@ -106,6 +106,12 @@ export class CloudCredentialService {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async disconnect(accountRef: string): Promise<void> {
+    await this.db().query('DELETE FROM credential_vault WHERE account_ref = ANY($1::text[])', [
+      [accountRef, this.draftRef(accountRef)],
+    ]);
+  }
+
   async cancel(accountRef: string): Promise<void> {
     await this.db().query('DELETE FROM credential_vault WHERE account_ref = $1', [this.draftRef(accountRef)]);
   }
