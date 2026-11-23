@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { BadRequestException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Bot, type Context } from 'grammy';
 import { CloudAcademicReader } from './cloud-academic.reader';
@@ -16,6 +16,7 @@ import type { AssignmentType, StoredAssignment } from '../domain/models';
  */
 @Injectable()
 export class VercelTelegramService {
+  private readonly logger = new Logger(VercelTelegramService.name);
   private bot?: Bot;
   private initialized?: Promise<void>;
 
