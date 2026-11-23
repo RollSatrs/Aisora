@@ -162,8 +162,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     if (!context) {
       const profileRoot = this.config.get<string>('AIS_BROWSER_PROFILE_DIR') || join(homedir(), '.aisora', 'abu-browser-profile');
       const profileName = createHash('sha256').update(accountId).digest('hex').slice(0, 16);
+      const browserChannel = this.config.get<string>('AIS_BROWSER_CHANNEL');
       context = await chromium.launchPersistentContext(join(profileRoot, profileName), {
-        channel: 'chrome',
+        ...(browserChannel === 'chromium' ? {} : { channel: browserChannel || 'chrome' }),
         headless: this.config.get<string>('AIS_BROWSER_HEADLESS') === 'true',
         viewport: null,
         args: [
