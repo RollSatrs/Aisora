@@ -28,6 +28,22 @@ async function main() {
 }
 
 void main().catch((error: unknown) => {
-  console.error('AIS cloud sync failed:', error instanceof Error ? error.name : 'unknown');
+  // Timeout stages in AbuUniversityAdapter are static developer-authored labels,
+  // not extracted student page content. Never print raw error messages/stacks.
+  const knownStages = new Set([
+    'запуск браузерной сессии',
+    'открытие AIS',
+    'ожидание загрузки главной страницы',
+    'автоматический вход',
+    'чтение списка дисциплин',
+    'открытие электронного журнала',
+    'чтение заданий и отправок',
+    'возврат на главную страницу',
+    'ожидание главной страницы',
+    'чтение расписания',
+  ]);
+  const stage = error && typeof error === 'object' && 'stage' in error
+    && typeof error.stage === 'string' && knownStages.has(error.stage) ? error.stage : undefined;
+  console.error('AIS cloud sync failed:', error instanceof Error ? error.name : 'unknown', stage ? `at stage: ${stage}` : '');
   process.exitCode = 1;
 });
