@@ -104,7 +104,10 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       const page = await this.withStage('запуск браузерной сессии', () => this.page(accountId));
       await this.throttle();
       await onProgress?.('Открываю главную страницу AIS');
-      await this.withStage('открытие AIS', () => page.goto(AIS_URL, { waitUntil: 'domcontentloaded' }));
+      const initialResponse = await this.withStage('открытие AIS', () => page.goto(AIS_URL, { waitUntil: 'domcontentloaded' }));
+      if (this.config.get<string>('AIS_CLOUD_PAGE_DIAGNOSTICS') === 'true') {
+        this.logger.warn(`AIS initial navigation: HTTP ${initialResponse?.status() ?? 'no-response'}; ${this.safeAisLocation(page)}`);
+      }
       await this.withStage('ожидание загрузки главной страницы', () => this.waitForHomeReady(page));
       if (await page.getByRole('button', { name: 'Войти', exact: true }).isVisible().catch(() => false)) {
         await onProgress?.('Выполняю автоматический вход');
@@ -153,8 +156,44 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     }
   }
 
+  /**
+   * The login page can change its markup without changing the AIS origin.
+   * Report only bounded structural counters and HTTP status (no URL paths,
+   * page titles, content, screenshots, cookies or credentials).
+   */
+  private safeAisLocation(page: Page): string {
+    try {
+      const location = new URL(page.url());
+      return location.origin === 'https://ais.semuniver.kz' ? 'AIS origin' : 'non-AIS origin';
+    } catch {
+      return 'unknown origin';
+    }
+  }
+
+  private async safeInitialPageDiagnostics(page: Page): Promise<void> {
+    try {
+      const [loginInputs, passwordInputs, profileCards, visibleInputs, frameCount] = await Promise.all([
+        page.locator('input[name="login"]').count(),
+        page.locator('input[type="password"]').count(),
+        page.locator('.box-body.box-profile').count(),
+        page.locator('input:visible').count(),
+        Promise.resolve(page.frames().length),
+      ]);
+      this.logger.warn(`AIS page structure: ${this.safeAisLocation(page)}, loginInputs=${Math.min(loginInputs, 20)}, passwordInputs=${Math.min(passwordInputs, 20)}, profileCards=${Math.min(profileCards, 20)}, visibleInputs=${Math.min(visibleInputs, 20)}, frames=${Math.min(frameCount, 20)}`);
+    } catch {
+      this.logger.warn('AIS page structure inspection unavailable');
+    }
+  }
+
   private async waitForHomeReady(page: Page): Promise<void> {
-    await page.locator('.box-body.box-profile, input[name="login"]').first().waitFor({ state: 'visible' });
+    try {
+      await page.locator('.box-body.box-profile, input[name="login"]').first().waitFor({ state: 'visible' });
+    } catch (error) {
+      if (this.config.get<string>('AIS_CLOUD_PAGE_DIAGNOSTICS') === 'true') {
+        await this.safeInitialPageDiagnostics(page);
+      }
+      throw error;
+    }
   }
 
   private async page(accountId: string): Promise<Page> {
