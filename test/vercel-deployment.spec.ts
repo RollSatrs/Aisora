@@ -3,15 +3,31 @@ import { BadRequestException, ServiceUnavailableException, UnauthorizedException
 import { ConfigService } from '@nestjs/config';
 import { VercelController } from '../src/vercel/vercel.controller';
 import { VercelTelegramService } from '../src/vercel/vercel-telegram.service';
+import type { CloudAcademicReader } from '../src/vercel/cloud-academic.reader';
+import type { AccountState, StoredAssignment } from '../src/domain/models';
+
+function stubReader(account?: AccountState, tasks: StoredAssignment[] = []) {
+  return {
+    readAccount: async (_accountRef: string) => account,
+    readTasks: async (_accountRef: string) => tasks,
+  } as CloudAcademicReader;
+}
 
 function makeService(token = '', secret = ''): VercelTelegramService {
   return new VercelTelegramService(new ConfigService({
     TELEGRAM_BOT_TOKEN: token,
     TELEGRAM_WEBHOOK_SECRET: secret,
-  }));
+  }), stubReader());
 }
 
 describe('Vercel HTTP-only deployment', () => {
+  it('keeps cloud Telegram tests independent of real Postgres and AIS credentials', () => {
+    const reader = stubReader();
+    expect(reader).toBeDefined();
+    const service = makeService();
+    expect(service.configured()).toBe(false);
+  });
+
   it('exposes a safe health endpoint without secrets or a database', () => {
     const controller = new VercelController(makeService());
     expect(controller.health()).toMatchObject({
