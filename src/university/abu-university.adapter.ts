@@ -349,7 +349,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         .first();
       if (await studyLink.isVisible().catch(() => false)) {
         await this.throttle();
-        await studyLink.click();
+        await this.diagnosticClick('study-menu-open', studyLink, () => studyLink.click());
         await journalLink.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => undefined);
       }
     }
@@ -358,7 +358,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       await onProgress?.('Открываю электронный журнал');
       await this.throttle();
       const started = Date.now();
-      await journalLink.click();
+      await this.diagnosticClick('journal-open', journalLink, () => journalLink.click());
       await disciplineSelector.waitFor({
         state: 'visible',
         timeout: Number(this.config.get<string>('AIS_PAGE_TIMEOUT_MS') ?? 300_000),
@@ -431,7 +431,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   }> {
     const menuStarted = Date.now();
     await onProgress?.('Получаю дисциплины из журнала');
-    await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+    await this.diagnosticClick('course-menu-toggle', page.getByRole('link', { name: 'Выберите Вашу дисциплину' }), () => page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click());
     const courseMenu = page.getByRole('menuitem');
     await courseMenu.first().waitFor({
       state: 'visible',
@@ -439,7 +439,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     });
     const menuNames = (await courseMenu.allTextContents()).map(normalizeText).filter(Boolean);
     this.logger.log(`AIS course dropdown populated: ${menuNames.length} entries in ${Date.now() - menuStarted}ms`);
-    await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+    await this.diagnosticClick('course-menu-toggle', page.getByRole('link', { name: 'Выберите Вашу дисциплину' }), () => page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click());
     const discoveredNames = menuNames.length ? menuNames : dashboardCourses.map((course) => course.name.replace(/\s*\([^)]*\)$/, ''));
     const courseNames = this.orderCourseNames(discoveredNames);
     const courses: CourseSnapshot[] = [];
@@ -450,9 +450,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     for (const [courseIndex, name] of courseNames.entries()) {
       await onProgress?.(`Читаю дисциплину ${courseIndex + 1} из ${courseNames.length}`);
       await this.throttle();
-      await page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click();
+      await this.diagnosticClick('course-menu-toggle', page.getByRole('link', { name: 'Выберите Вашу дисциплину' }), () => page.getByRole('link', { name: 'Выберите Вашу дисциплину' }).click());
       const courseStarted = Date.now();
-      await page.getByRole('menuitem', { name, exact: true }).click();
+      await this.diagnosticClick('course-select-menuitem', page.getByRole('menuitem', { name, exact: true }), () => page.getByRole('menuitem', { name, exact: true }).click());
       await page.locator('#journaltabletab').waitFor({ state: 'visible' });
       await page.waitForFunction((courseName) => {
         const text = (document.querySelector('#main')?.textContent ?? '').replace(/\s+/g, ' ');
@@ -487,7 +487,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           onProgress,
         });
         await this.throttle();
-        await weekLink.click();
+        await this.diagnosticClick('week-select', weekLink, () => weekLink.click());
         await this.waitForWeekContent(page, week);
         // The journal keeps old/hidden AJAX fragments in the DOM. Reading every
         // <strong> used to attach an assignment from another week (or course) to
@@ -532,7 +532,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       // "Отправленные" is already visible while Inbox is active, so using the
       // link itself as an expected navigation result returns too early. Click
       // the folder explicitly and verify the sent-only "Получатель" column.
-      await sentLink.click();
+      await this.diagnosticClick('sent-folder-open', sentLink, () => sentLink.click());
       const sentTable = page.locator('#tab_3-2 table:visible').first();
       await sentTable.getByText('Получатель', { exact: true }).waitFor({
         state: 'visible',
@@ -574,7 +574,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           const weekLink = page.locator(`#li-${week} a`);
           if (!(await weekLink.count())) continue;
           await this.throttle();
-          await weekLink.click();
+          await this.diagnosticClick('week-select', weekLink, () => weekLink.click());
           await this.waitForWeekContent(page, week);
           const titles = [...new Set(
             (await page.locator('#journaltabletab a:visible').allTextContents())
@@ -615,7 +615,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         await this.throttle();
         try {
           const previousLinks = await page.locator('#myfiles a').allTextContents().catch(() => [] as string[]);
-          await detail.click();
+          await this.diagnosticClick('sro-history-open', detail, () => detail.click());
           const container = page.locator('#myfiles');
           const timeout = Number(this.config.get<string>('AIS_SRO_HISTORY_TIMEOUT_MS') ?? 10_000);
           await container.waitFor({ state: 'attached', timeout });
@@ -711,7 +711,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       if (!(await row.count())) continue;
       try {
         const before = normalizeText(await page.locator('#inboxmail').innerText().catch(() => ''));
-        await row.locator('td').first().click({ force: true, timeout });
+        await this.diagnosticClick('sent-message-row-open', row.locator('td').first(), () => row.locator('td').first().click({ force: true, timeout }));
         await page.waitForFunction((previous) => {
           const text = (document.querySelector('#inboxmail')?.textContent ?? '').replace(/\\s+/g, ' ').trim();
           return text.length > 0 && text !== previous;
@@ -727,7 +727,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         failed += 1;
       }
       if (index + 1 < relevant.length) {
-        await page.getByText('Отправленные', { exact: true }).click({ timeout });
+        await this.diagnosticClick('return-to-sent-folder', page.getByText('Отправленные', { exact: true }), () => page.getByText('Отправленные', { exact: true }).click({ timeout }));
         await page.locator('#tab_3-2 table tbody tr').first()
           .waitFor({ state: 'visible', timeout }).catch(() => undefined);
       }
@@ -752,7 +752,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       if (!(await anchor.count())) continue;
       const before = normalizeText(await page.locator('#contentdetdiv').innerText().catch(() => ''));
       const started = Date.now();
-      await anchor.click();
+      await this.diagnosticClick('content-details-open', anchor, () => anchor.click());
       await page.waitForFunction((previous) => {
         const current = (document.querySelector('#contentdetdiv')?.textContent ?? '').replace(/\s+/g, ' ').trim();
         return current.length > 0 && current !== previous;
@@ -764,7 +764,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       if (!body || body === before || body.length <= title.length) {
         this.logger.warn(`Content detail unavailable week=${week} elapsed_ms=${Date.now() - started}; skipping unchanged dialog`);
         const weekLink = page.locator(`#li-${week} a`);
-        if (await weekLink.count()) { await weekLink.click(); await this.waitForWeekContent(page, week); }
+        if (await weekLink.count()) { await this.diagnosticClick('week-select', weekLink, () => weekLink.click()); await this.waitForWeekContent(page, week); }
         continue;
       }
       const resources = await this.contentExtractor.extractLinkedResources(page, container);
@@ -773,7 +773,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
 
       const weekLink = page.locator(`#li-${week} a`);
       if (await weekLink.count()) {
-        await weekLink.click();
+        await this.diagnosticClick('week-select', weekLink, () => weekLink.click());
         await this.waitForWeekContent(page, week);
       }
     }
