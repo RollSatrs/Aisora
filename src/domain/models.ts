@@ -55,6 +55,8 @@ export interface UniversitySnapshot {
   weeks: WeekSnapshot[];
   assignments: AssignmentSnapshot[];
   schedule: ScheduleEventSnapshot[];
+  /** Explicitly verified journal week scans, used to guard destructive DB cleanup. */
+  verifiedContentWeeks?: Array<{ courseRef: string; weekNumber: number }>;
 }
 
 export interface StoredAssignment extends AssignmentSnapshot {
