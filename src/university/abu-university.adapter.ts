@@ -497,7 +497,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         });
         await this.throttle();
         await this.diagnosticClick('week-select', weekLink, () => weekLink.click());
-        await this.waitForWeekContent(page, week);
+        const headingVerified = await this.waitForWeekContent(page, week);
         // The journal keeps old/hidden AJAX fragments in the DOM. Reading every
         // <strong> used to attach an assignment from another week (or course) to
         // the currently requested week. Only visible linked content belongs to
@@ -523,7 +523,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         const details = detailScan.details;
         // Do not attest empty/uncertain week scans: the server may have
         // returned stale or not-yet-loaded content.
-        if (contentTitles.length > 0 && detailScan.complete) {
+        if (headingVerified && contentTitles.length > 0 && detailScan.complete) {
           verifiedContentWeeks.push({ courseRef, weekNumber: week });
         }
         contentObservations.push({ week, titles: contentTitles, details });
@@ -672,7 +672,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     return { currentWeek, courses, weeks, assignments, verifiedContentWeeks };
   }
 
-  private async waitForWeekContent(page: Page, week: number): Promise<void> {
+  private async waitForWeekContent(page: Page, week: number): Promise<boolean> {
     const started = Date.now();
     let completed = false;
     try {
@@ -713,6 +713,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         throw new AbuReadTimeoutError(`переключение на ${week}-ю неделю (AIS показывает ${displayedWeek}-ю)`);
       }
       completed = true;
+      // Only a verified visible heading authorizes deletion of stale rows.
+      // Marker-only weeks can be read, but remain UNKNOWN for cleanup.
+      return evidence === 'heading-confirmed';
     } finally {
       this.syncDiagnostics?.recordWait('week-content-ready', started, completed);
     }
