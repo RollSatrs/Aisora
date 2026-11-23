@@ -155,6 +155,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         courses: journal.courses,
         weeks: journal.weeks,
         assignments: journal.assignments,
+        verifiedContentWeeks: journal.verifiedContentWeeks,
         schedule,
       };
       } finally {
@@ -428,6 +429,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     courses: CourseSnapshot[];
     weeks: WeekSnapshot[];
     assignments: AssignmentSnapshot[];
+    verifiedContentWeeks: Array<{ courseRef: string; weekNumber: number }>;
   }> {
     const menuStarted = Date.now();
     await onProgress?.('Получаю дисциплины из журнала');
@@ -444,6 +446,11 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     const courseNames = this.orderCourseNames(discoveredNames);
     const courses: CourseSnapshot[] = [];
     const assignments: AssignmentSnapshot[] = [];
+    const verifiedContentWeeks: Array<{ courseRef: string; weekNumber: number }> = [];
+    // Cache only for this synchronization. The message table itself is still
+    // checked for every course so per-course filtering stays intact.
+    const sentDetailsCache = new Map<string, SentMessageObservation>();
+    const sentDetailsFailed = new Set<string>();
     let currentWeek = 1;
     let weeks: WeekSnapshot[] = [];
 
@@ -505,14 +512,20 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         if (!contentTitles.some((title) => independentWorkType(title) === 'SRO')) {
           await this.htmlDiagnostics.capture(diagnosticAccountId, courseRef, week, 'weekly-content', page.locator('#journaltabletab'));
         }
-        const details = await this.readContentDetails(
+        const detailScan = await this.readContentDetails(
           page,
           week,
           contentTitles,
           !options.disabledLabCourseRefs?.has(courseRef),
         );
+        const details = detailScan.details;
+        // Do not attest empty/uncertain week scans: the server may have
+        // returned stale or not-yet-loaded content.
+        if (contentTitles.length > 0 && detailScan.complete) {
+          verifiedContentWeeks.push({ courseRef, weekNumber: week });
+        }
         contentObservations.push({ week, titles: contentTitles, details });
-        this.logger.log(`SRO detail reading course=${courseIndex + 1} week=${week}: opened=${details.size}`);
+        this.logger.log(`SRO detail reading course=${courseIndex + 1} week=${week}: opened=${details.size} complete=${detailScan.complete}`);
         for (const title of contentTitles.filter((value) => independentWorkType(value) === 'SRO')) {
           const content = details.get(title);
           if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
@@ -538,7 +551,8 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         state: 'visible',
         timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000),
       });
-      const sent = await this.readSentMessages(page);
+      const sentResult = await this.readSentMessages(page, sentDetailsCache, sentDetailsFailed);
+      const sent = sentResult.messages;
       for (const observation of contentObservations) {
         assignments.push(...parseContentAssignments(
           courseRef,
@@ -546,6 +560,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
           observation.titles,
           sent,
           observation.details,
+          sentResult.complete,
         ));
       }
 
@@ -581,7 +596,8 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
               .map(normalizeText)
               .filter((title) => independentWorkType(title) === 'SRO'),
           )];
-          const details = await this.readContentDetails(page, week, titles, false);
+          const detailScan = await this.readContentDetails(page, week, titles, false);
+          const details = detailScan.details;
           for (const title of titles) {
             const content = details.get(title);
             if (content) sroBriefs.push({ courseRef, weekNumber: week, title, content });
@@ -651,7 +667,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       }
       assignments.push(...sroAssignments);
     }
-    return { currentWeek, courses, weeks, assignments };
+    return { currentWeek, courses, weeks, assignments, verifiedContentWeeks };
   }
 
   private async waitForWeekContent(page: Page, week: number): Promise<void> {
@@ -748,15 +764,19 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     week: number,
     rawTitles: string[],
     analyzeLabs: boolean,
-  ): Promise<Map<string, string>> {
+  ): Promise<{ details: Map<string, string>; complete: boolean }> {
     const titles = rawTitles.map(normalizeText).filter((title) => {
       const type = contentType(title);
       return type === 'SRSP' || type === 'SRO' || (type === 'LAB' && analyzeLabs) || independentWorkType(title) === 'SRO';
     });
     const details = new Map<string, string>();
+    let complete = true;
     for (const title of titles) {
       const anchor = page.locator('#journaltabletab a:visible').filter({ hasText: title }).first();
-      if (!(await anchor.count())) continue;
+      if (!(await anchor.count())) {
+        complete = false;
+        continue;
+      }
       const before = normalizeText(await page.locator('#contentdetdiv').innerText().catch(() => ''));
       const started = Date.now();
       await this.diagnosticClick('content-details-open', anchor, () => anchor.click());
@@ -769,6 +789,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       const body = normalizeText(await container.innerText().catch(() => ''));
       // Do not attach stale content from a previous dialog to a new task.
       if (!body || body === before || body.length <= title.length) {
+        complete = false;
         this.logger.warn(`Content detail unavailable week=${week} elapsed_ms=${Date.now() - started}; skipping unchanged dialog`);
         const weekLink = page.locator(`#li-${week} a`);
         if (await weekLink.count()) { await this.diagnosticClick('week-select', weekLink, () => weekLink.click()); await this.waitForWeekContent(page, week); }
@@ -784,6 +805,6 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         await this.waitForWeekContent(page, week);
       }
     }
-    return details;
+    return { details, complete };
   }
 }
