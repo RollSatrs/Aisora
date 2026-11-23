@@ -18,16 +18,10 @@ async function main() {
   const app = await NestFactory.createApplicationContext(CloudSyncModule, { logger: ['error', 'warn'] });
   try {
     const sync = app.get(SyncService);
-    const summary = await sync.synchronize(accountRef, new Date(), async (stage) => {
-      // Do not log page HTML, credentials or student-specific contents.
-      console.log('AIS sync stage:', stage.replace(/[\r\n]/g, ' ').slice(0, 130));
-    });
-    console.log('Read-only AIS sync finished:', JSON.stringify({
-      courses: summary.courses,
-      assignments: summary.assignments,
-      currentWeek: summary.currentWeek,
-      changed: summary.changed,
-    }));
+    // Public Actions logs must not contain student data, course titles,
+    // account references, screenshots, submission details or passwords.
+    await sync.synchronize(accountRef);
+    console.log('Read-only AIS sync finished successfully; results stored in Neon');
   } finally {
     await app.close();
   }
