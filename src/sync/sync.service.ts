@@ -63,6 +63,11 @@ export class SyncService {
     await this.repository.upsertCourses(accountId, snapshot.courses);
     await this.repository.replaceSchedule(accountId, snapshot.schedule);
     const previousAssignments = await this.repository.listAssignments(accountId);
+    const previousByRef = new Map(previousAssignments.map((item) => [item.externalRef, item]));
+    // Fail closed: the adapter must explicitly attest that a particular
+    // course/week was read completely before CONTENT rows may be deleted.
+    const verifiedWeeks = new Set((snapshot.verifiedContentWeeks ?? [])
+      .map(({ courseRef, weekNumber }) => `${courseRef}|${weekNumber}`));
     let changed = 0;
     for (const item of snapshotAssignments) {
       const hash = createHash('sha256').update(JSON.stringify({
@@ -70,9 +75,23 @@ export class SyncService {
         requiredState: item.requiredState, source: item.source, submitted: item.submitted,
         submissionState: item.submissionState, grade: item.grade,
       })).digest('hex');
-      const previous = previousAssignments.find((assignment) => assignment.externalRef === item.externalRef);
-      const stored: StoredAssignment = {
+      const previous = previousByRef.get(item.externalRef);
+      // An unchanged/empty detail dialog is UNKNOWN, not evidence that
+      // a previously read assignment or confirmed submission disappeared.
+      const keepPriorDetail = item.source === 'CONTENT' &&
+        item.content.trim() === item.title.trim() &&
+        previous?.content && previous.content.trim() !== previous.title.trim();
+      const preservedSubmission = item.source === 'CONTENT' &&
+        item.submissionState === 'UNKNOWN' &&
+        previous?.submissionState === 'CONFIRMED';
+      const safeItem: AssignmentSnapshot = {
         ...item,
+        content: keepPriorDetail ? previous!.content : item.content,
+        submitted: preservedSubmission ? true : item.submitted,
+        submissionState: preservedSubmission ? 'CONFIRMED' : item.submissionState,
+      };
+      const stored: StoredAssignment = {
+        ...safeItem,
         contentHash: hash,
         status: resolveAssignmentStatus(item, snapshot.currentWeek),
         versions: previous?.versions.includes(hash) ? previous.versions : [...(previous?.versions ?? []), hash],
@@ -84,14 +103,17 @@ export class SyncService {
     }
     const selectedRefs = new Set(snapshotAssignments.map((item) => item.externalRef));
     const duplicateRefs = snapshot.assignments
-      .map((item) => item.externalRef)
-      .filter((externalRef) => !selectedRefs.has(externalRef));
+      .filter((item) => !selectedRefs.has(item.externalRef)
+        && (item.source !== 'CONTENT' ||
+          verifiedWeeks.has(`${item.courseRef}|${item.weekNumber}`)))
+      .map((item) => item.externalRef);
     const scannedCourseRefs = new Set(snapshot.courses.map((course) => course.externalRef));
     const scannedWeeks = new Set(activePeriodWeeks(snapshot.currentWeek));
     const staleContentRefs = previousAssignments
       .filter((item) => item.source === 'CONTENT'
         && scannedCourseRefs.has(item.courseRef)
         && scannedWeeks.has(item.weekNumber)
+        && verifiedWeeks.has(`${item.courseRef}|${item.weekNumber}`)
         && !selectedRefs.has(item.externalRef))
       .map((item) => item.externalRef);
     await this.repository.deleteAssignments(accountId, [...new Set([...duplicateRefs, ...staleContentRefs])]);
