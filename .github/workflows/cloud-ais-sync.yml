@@ -1,0 +1,56 @@
+name: Cloud Aisora read-only AIS sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_ref:
+        description: "Telegram account reference from authenticated bot (telegram:12345)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-ais-sync-${{ inputs.account_ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    env:
+      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      CREDENTIALS_MASTER_KEY: ${{ secrets.CREDENTIALS_MASTER_KEY }}
+      AISORA_SYNC_ACCOUNT_REF: ${{ inputs.account_ref }}
+      AIS_AUTOMATION_APPROVED: ${{ vars.AIS_AUTOMATION_APPROVED }}
+      AIS_BROWSER_HEADLESS: 'true'
+      AIS_BROWSER_CHANNEL: chromium
+      AIS_AGENT_MODEL_ENABLED: 'false'
+      AIS_AGENT_REMOTE_DATA_APPROVED: 'false'
+      AIS_AUTONOMOUS_SUBMISSION_ENABLED: 'false'
+      TZ: Asia/Almaty
+    steps:
+      - name: Fail safely when AIS read access is not approved
+        shell: bash
+        run: |
+          test "$AIS_AUTOMATION_APPROVED" = "true" || { echo "::error::Missing explicit AIS_AUTOMATION_APPROVED=true"; exit 1; }
+          test -n "$DATABASE_URL" || { echo "::error::Missing secret NEON_DATABASE_URL"; exit 1; }
+          test -n "$CREDENTIALS_MASTER_KEY" || { echo "::error::Missing secret CREDENTIALS_MASTER_KEY"; exit 1; }
+          [[ "$AISORA_SYNC_ACCOUNT_REF" =~ ^telegram:[0-9]{1,20}$ ]] || { echo "::error::Invalid account reference"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install bundled Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Compile NestJS and cloud runner
+        run: pnpm build
+      - name: Read ABU AIS (no submissions)
+        run: node dist/src/cloud/run-sync.js
