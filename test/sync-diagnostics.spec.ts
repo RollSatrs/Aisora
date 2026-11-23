@@ -44,6 +44,31 @@ describe('local Aisora Playwright diagnostics', () => {
     expect(JSON.stringify(report)).not.toContain('https://ais.semuniver.kz/login.php');
   });
 
+  it('supports JSON-only diagnostics without launching a heavy Trace Viewer recording', async () => {
+    const start = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const page = {
+      context: () => ({ tracing: { start, stop } }),
+      on: vi.fn(),
+      off: vi.fn(),
+    } as unknown as Page;
+    const recorder = await SyncDiagnosticsRecorder.start(page, { traceEnabled: false });
+    await recorder.stage('read-week', async () => undefined);
+    const outputDir = await recorder.finish();
+    const report = JSON.parse(await readFile(join(outputDir, 'report.json'), 'utf8')) as {
+      traceSaved: boolean;
+      traceStopMs: number;
+      browserElapsedMs: number;
+      events: Array<{ label: string }>;
+    };
+    expect(start).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(report.traceSaved).toBe(false);
+    expect(report.traceStopMs).toBeGreaterThanOrEqual(0);
+    expect(report.browserElapsedMs).toBeGreaterThanOrEqual(0);
+    expect(report.events[0]?.label).toBe('read-week');
+  });
+
   it('does not swallow failures from Playwright actions', async () => {
     const page = {
       context: () => ({ tracing: { start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) } }),
