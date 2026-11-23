@@ -3,6 +3,8 @@ import { BadRequestException, Injectable, Logger, ServiceUnavailableException, U
 import { ConfigService } from '@nestjs/config';
 import { Bot, type Context } from 'grammy';
 import { CloudAcademicReader } from './cloud-academic.reader';
+import { CloudCredentialService } from './cloud-credential.service';
+import { CloudSyncDispatcher } from './cloud-sync.dispatcher';
 import { formatTaskOverview, formatTaskType, formatTaskCategory, type TaskCategory } from '../bot/task-report';
 import type { AssignmentType, StoredAssignment } from '../domain/models';
 
@@ -20,7 +22,12 @@ export class VercelTelegramService {
   private bot?: Bot;
   private initialized?: Promise<void>;
 
-  constructor(private readonly config: ConfigService, private readonly academic: CloudAcademicReader) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly academic: CloudAcademicReader,
+    private readonly credentials: CloudCredentialService,
+    private readonly cloudSync: CloudSyncDispatcher,
+  ) {}
 
   configured(): boolean {
     return Boolean(this.config.get<string>('TELEGRAM_BOT_TOKEN')
@@ -161,6 +168,76 @@ export class VercelTelegramService {
     });
   }
 
+  private async beginConnect(ctx: Context): Promise<void> {
+    const accountRef = this.accountRef(ctx);
+    if (!accountRef) {
+      await ctx.reply('🔒 Подключение АИС доступно только в личном чате.');
+      return;
+    }
+    if (!this.credentials.configured()) {
+      await ctx.reply('🔒 Подключение пока недоступно: администратор должен настроить ключ шифрования.');
+      return;
+    }
+    try {
+      await this.credentials.begin(accountRef);
+      await ctx.reply('🔒 Подключение АИС. Введите ваш 5-значный логин. Затем бот запросит пароль. Для отмены: /cancel. Данные будут зашифрованы; Telegram может хранить отправленные сообщения в своей инфраструктуре.');
+    } catch {
+      this.logger.warn('Connect initialization failed');
+      await ctx.reply('⚠️ Не удалось начать подключение к АИС. Повторите позже.');
+    }
+  }
+
+  private async handleConnectInput(ctx: Context & { message: { text: string } }): Promise<boolean> {
+    const accountRef = this.accountRef(ctx);
+    if (!accountRef) return false;
+    if (!this.credentials.configured()) return false;
+    const draft = await this.credentials.getDraft(accountRef).catch(() => undefined);
+    if (!draft) return false;
+    const value = ctx.message.text.trim();
+    // Best effort only: Telegram deletion may fail and is not a guarantee
+    // that the message is purged from Telegram's systems.
+    await ctx.deleteMessage().catch(() => undefined);
+    if (!draft.login) {
+      if (!/^\\d{5}$/.test(value)) {
+        await ctx.reply('Логин должен состоять из 5 цифр. Повторите ввод или /cancel.');
+      } else {
+        await this.credentials.setLogin(accountRef, value);
+        await ctx.reply('Введите пароль от АИС. Сообщение с паролем будет удалено ботом при возможности. Для отмены: /cancel.');
+      }
+      return true;
+    }
+    if (value.length < 6 || value.length > 128) {
+      await ctx.reply('Пароль должен содержать от 6 до 128 символов. Повторите ввод или /cancel.');
+      return true;
+    }
+    try {
+      await this.credentials.finish(accountRef, value);
+      await ctx.reply('✅ Данные АИС зашифрованы и сохранены в Neon. Авторизацию ещё нужно подтвердить первой синхронизацией. Для неё потребуется настроенный облачный исполнитель.');
+    } catch {
+      this.logger.warn('Connect completion failed');
+      await ctx.reply('⚠️ Не удалось сохранить учётные данные. Попробуйте /connect снова.');
+    }
+    return true;
+  }
+
+  private async beginSync(ctx: Context): Promise<void> {
+    const accountRef = this.accountRef(ctx);
+    if (!accountRef) {
+      await ctx.reply('🔒 Синхронизация доступна только в личном чате.');
+      return;
+    }
+    if (!this.cloudSync.configured()) {
+      await ctx.reply('⏳ Облачный исполнитель ещё не настроен. Требуется GitHub Actions token и доступ к Neon в Actions.');
+      return;
+    }
+    try {
+      await this.cloudSync.dispatch(accountRef);
+      await ctx.reply('✅ Облачная синхронизация запрошена в GitHub Actions. Запуск может занять несколько минут. Данные появятся в /tasks после завершения.');
+    } catch {
+      await ctx.reply('⚠️ Не удалось запустить облачную синхронизацию. Проверьте /connect и настройки GitHub Actions.');
+    }
+  }
+
   private getBot(token: string): Bot {
     if (this.bot) return this.bot;
     const bot = new Bot(token);
@@ -189,14 +266,17 @@ export class VercelTelegramService {
         for (const message of formatTaskType(tasks, week, type)) await ctx.reply(message);
       }));
     }
-    bot.command('sync', async (ctx) => {
-      await ctx.reply('⏳ /sync пока не подключена. Длительный Playwright-запуск будет выполняться отдельным облачным заданием, не внутри webhook Vercel.');
-    });
-    bot.command('connect', async (ctx) => {
-      await ctx.reply('🔒 Подключение учётной записи АИС в облаке пока отключено. Не присылайте логин или пароль в этот чат.');
+    bot.command('sync', async (ctx) => this.beginSync(ctx));
+    bot.command('connect', async (ctx) => this.beginConnect(ctx));
+    bot.command('cancel', async (ctx) => {
+      const ref = this.accountRef(ctx);
+      if (!ref) return;
+      if (this.credentials.configured()) await this.credentials.cancel(ref).catch(() => undefined);
+      await ctx.reply('Подключение отменено.');
     });
     bot.on('message:text', async (ctx) => {
-      await ctx.reply('☁️ Aisora Cloud. Доступны /ping, /status, /tasks, /srocheck. Синхронизация АИС пока отключена.');
+      if (await this.handleConnectInput(ctx)) return;
+      await ctx.reply('☁️ Aisora Cloud. Доступны /ping, /connect, /sync, /status, /tasks и /srocheck.');
     });
     this.bot = bot;
     return bot;
