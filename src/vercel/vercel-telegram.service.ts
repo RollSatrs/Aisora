@@ -198,7 +198,7 @@ export class VercelTelegramService {
     // that the message is purged from Telegram's systems.
     await ctx.deleteMessage().catch(() => undefined);
     if (!draft.login) {
-      if (!/^\\d{5}$/.test(value)) {
+      if (!/^\d{5}$/.test(value)) {
         await ctx.reply('Логин должен состоять из 5 цифр. Повторите ввод или /cancel.');
       } else {
         await this.credentials.setLogin(accountRef, value);
