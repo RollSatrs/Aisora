@@ -7,7 +7,7 @@ import { formatTaskOverview, formatTaskType, formatTaskCategory, type TaskCatego
 import type { AssignmentType, StoredAssignment } from '../domain/models';
 
 /**
- * Stateless Telegram webhook smoke test. It deliberately doesn't use
+ * Serverless Telegram webhook with read-only PostgreSQL commands. It deliberately doesn't use
  * TelegramBotService because the full bot relies on persistent processes,
  * Redis workers, Playwright, and a Postgres-backed credential vault.
  *
@@ -134,7 +134,7 @@ export class VercelTelegramService {
         `Последняя синхронизация: ${account.lastSyncAt?.toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }) ?? 'нет'}`,
         `Автономный режим: ${account.autonomousStatus}`,
         'Отправка файлов в АИС: отключена',
-      ].join('\\n'));
+      ].join('\n'));
     } catch {
       this.logger.warn('Cloud account status read failed');
       await ctx.reply('⚠️ Ошибка чтения статуса из Neon. Попробуйте позже.');
@@ -151,11 +151,11 @@ export class VercelTelegramService {
       for (const task of pending) {
         const parts = task.content.split('Условие из журнала:');
         const condition = parts.length > 1 ? parts.slice(1).join('Условие из журнала:').trim() : '';
-        const label = `📘 ${task.courseName ?? task.courseRef}\\n📝 СРО, неделя ${task.weekNumber}`;
+        const label = `📘 ${task.courseName ?? task.courseRef}\n📝 СРО, неделя ${task.weekNumber}`;
         const result = condition
-          ? `✅ Условие сопоставлено с карточкой сдачи.\\n${condition.slice(0, 1100)}${condition.length > 1100 ? '…' : ''}`
+          ? `✅ Условие сопоставлено с карточкой сдачи.\n${condition.slice(0, 1100)}${condition.length > 1100 ? '…' : ''}`
           : '⚠️ Условие пока не удалось однозначно сопоставить.';
-        await ctx.reply(`${label}\\n${result}\\n\\n🔒 Только чтение сохранённых данных; отправка файлов отключена.`);
+        await ctx.reply(`${label}\n${result}\n\n🔒 Только чтение сохранённых данных; отправка файлов отключена.`);
       }
     });
   }
@@ -164,7 +164,7 @@ export class VercelTelegramService {
     if (this.bot) return this.bot;
     const bot = new Bot(token);
     bot.command('start', async (ctx) => {
-      await ctx.reply('✅ Aisora Cloud работает на Vercel!\\n/ping — проверка webhook\\n/status — статус АИС\\n/tasks — сохранённые задания\\n/srocheck — проверка СРО\\n/sync — пока недоступна в облачном режиме.');
+      await ctx.reply('✅ Aisora Cloud работает на Vercel!\n/ping — проверка webhook\n/status — статус АИС\n/tasks — сохранённые задания\n/srocheck — проверка СРО\n/sync — пока недоступна в облачном режиме.');
     });
     bot.command('ping', async (ctx) => {
       await ctx.reply('🏓 Pong! Aisora отвечает с Vercel.');
