@@ -5,7 +5,7 @@ import { SyncService } from '../sync/sync.service';
 
 async function main() {
   const accountRef = process.env.AISORA_SYNC_ACCOUNT_REF;
-  if (!accountRef || !/^telegram:\\d{1,20}$/.test(accountRef)) {
+  if (!accountRef || !/^telegram:\d{1,20}$/.test(accountRef)) {
     throw new Error('Expected AISORA_SYNC_ACCOUNT_REF=telegram:<numeric-id>');
   }
   if (process.env.AIS_AUTOMATION_APPROVED !== 'true') {
