@@ -1,7 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
 import { BadRequestException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Bot } from 'grammy';
+import { Bot, type Context } from 'grammy';
+import { CloudAcademicReader } from './cloud-academic.reader';
+import { formatTaskOverview, formatTaskType, formatTaskCategory, type TaskCategory } from '../bot/task-report';
+import type { AssignmentType, StoredAssignment } from '../domain/models';
 
 /**
  * Stateless Telegram webhook smoke test. It deliberately doesn't use
@@ -16,7 +19,7 @@ export class VercelTelegramService {
   private bot?: Bot;
   private initialized?: Promise<void>;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, private readonly academic: CloudAcademicReader) {}
 
   configured(): boolean {
     return Boolean(this.config.get<string>('TELEGRAM_BOT_TOKEN')
@@ -84,17 +87,115 @@ export class VercelTelegramService {
     return { ok: true };
   }
 
+  private accountRef(ctx: Context): string | undefined {
+    // Reject groups and channel messages to keep academic records private.
+    if (ctx.chat?.type !== 'private' || !ctx.from?.id) return undefined;
+    return `telegram:${ctx.from.id}`;
+  }
+
+  private async withAcademicData(
+    ctx: Context,
+    callback: (accountRef: string, currentWeek: number, tasks: StoredAssignment[]) => Promise<void>,
+  ): Promise<void> {
+    const accountRef = this.accountRef(ctx);
+    if (!accountRef) {
+      await ctx.reply('🔒 Учебные данные доступны только в личном чате с ботом.');
+      return;
+    }
+    try {
+      const account = await this.academic.readAccount(accountRef);
+      if (!account?.initialSyncCompletedAt) {
+        await ctx.reply('📭 Облачная база подключена, но синхронизация АИС для этого аккаунта ещё не выполнялась. Данных о заданиях пока нет; это не означает, что задолженностей нет. /sync появится после настройки отдельного облачного исполнителя.');
+        return;
+      }
+      const tasks = await this.academic.readTasks(accountRef);
+      await callback(accountRef, account.currentWeek ?? 1, tasks);
+    } catch {
+      this.logger.warn('Cloud academic read failed; user data not exposed');
+      await ctx.reply('⚠️ Не удалось прочитать данные из Neon. Попробуйте позже; проверьте подключение PostgreSQL.');
+    }
+  }
+
+  private async status(ctx: Context): Promise<void> {
+    const accountRef = this.accountRef(ctx);
+    if (!accountRef) {
+      await ctx.reply('🔒 Статус доступен только в личном чате.');
+      return;
+    }
+    try {
+      const account = await this.academic.readAccount(accountRef);
+      if (!account?.initialSyncCompletedAt) {
+        await ctx.reply('☁️ Aisora Cloud: PostgreSQL подключена. Первичная синхронизация АИС ещё не выполнена. Реальная отправка файлов отключена.');
+        return;
+      }
+      await ctx.reply([
+        '☁️ Aisora Cloud · данные Neon',
+        `Учебная неделя: ${account.currentWeek ?? 'неизвестна'}`,
+        `Последняя синхронизация: ${account.lastSyncAt?.toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }) ?? 'нет'}`,
+        `Автономный режим: ${account.autonomousStatus}`,
+        'Отправка файлов в АИС: отключена',
+      ].join('\\n'));
+    } catch {
+      this.logger.warn('Cloud account status read failed');
+      await ctx.reply('⚠️ Ошибка чтения статуса из Neon. Попробуйте позже.');
+    }
+  }
+
+  private async sroCheck(ctx: Context): Promise<void> {
+    await this.withAcademicData(ctx, async (_accountRef, _currentWeek, tasks) => {
+      const pending = tasks.filter((task) => task.type === 'SRO' && !task.submitted && task.grade === undefined);
+      if (!pending.length) {
+        await ctx.reply('✅ В сохранённых данных нет СРО, ожидающих сдачи. Статус зависит от последней синхронизации АИС.');
+        return;
+      }
+      for (const task of pending) {
+        const parts = task.content.split('Условие из журнала:');
+        const condition = parts.length > 1 ? parts.slice(1).join('Условие из журнала:').trim() : '';
+        const label = `📘 ${task.courseName ?? task.courseRef}\\n📝 СРО, неделя ${task.weekNumber}`;
+        const result = condition
+          ? `✅ Условие сопоставлено с карточкой сдачи.\\n${condition.slice(0, 1100)}${condition.length > 1100 ? '…' : ''}`
+          : '⚠️ Условие пока не удалось однозначно сопоставить.';
+        await ctx.reply(`${label}\\n${result}\\n\\n🔒 Только чтение сохранённых данных; отправка файлов отключена.`);
+      }
+    });
+  }
+
   private getBot(token: string): Bot {
     if (this.bot) return this.bot;
     const bot = new Bot(token);
     bot.command('start', async (ctx) => {
-      await ctx.reply('✅ Aisora работает в облаке! Сейчас это тестовый Telegram webhook. Синхронизация АИС пока отключена.');
+      await ctx.reply('✅ Aisora Cloud работает на Vercel!\\n/ping — проверка webhook\\n/status — статус АИС\\n/tasks — сохранённые задания\\n/srocheck — проверка СРО\\n/sync — пока недоступна в облачном режиме.');
     });
     bot.command('ping', async (ctx) => {
       await ctx.reply('🏓 Pong! Aisora отвечает с Vercel.');
     });
+    bot.command('status', async (ctx) => this.status(ctx));
+    bot.command('tasks', async (ctx) => this.withAcademicData(ctx, async (_ref, week, tasks) => {
+      await ctx.reply(formatTaskOverview(tasks, week));
+    }));
+    bot.command('srocheck', async (ctx) => this.sroCheck(ctx));
+    const categories: Record<string, TaskCategory> = {
+      debts: 'DEBT', current: 'CURRENT', upcoming: 'UPCOMING', completed: 'COMPLETED', clarification: 'CLARIFICATION',
+    };
+    for (const [command, category] of Object.entries(categories)) {
+      bot.command(command, async (ctx) => this.withAcademicData(ctx, async (_ref, week, tasks) => {
+        for (const message of formatTaskCategory(tasks, week, category)) await ctx.reply(message);
+      }));
+    }
+    const types: Record<string, AssignmentType> = { sro: 'SRO', srsp: 'SRSP', labs: 'LAB' };
+    for (const [command, type] of Object.entries(types)) {
+      bot.command(command, async (ctx) => this.withAcademicData(ctx, async (_ref, week, tasks) => {
+        for (const message of formatTaskType(tasks, week, type)) await ctx.reply(message);
+      }));
+    }
+    bot.command('sync', async (ctx) => {
+      await ctx.reply('⏳ /sync пока не подключена. Длительный Playwright-запуск будет выполняться отдельным облачным заданием, не внутри webhook Vercel.');
+    });
+    bot.command('connect', async (ctx) => {
+      await ctx.reply('🔒 Подключение учётной записи АИС в облаке пока отключено. Не присылайте логин или пароль в этот чат.');
+    });
     bot.on('message:text', async (ctx) => {
-      await ctx.reply('☁️ Облачная тестовая версия Aisora. Доступны /start и /ping. Команды /sync, /connect и /tasks подключим после настройки хранилища и фоновой синхронизации.');
+      await ctx.reply('☁️ Aisora Cloud. Доступны /ping, /status, /tasks, /srocheck. Синхронизация АИС пока отключена.');
     });
     this.bot = bot;
     return bot;
