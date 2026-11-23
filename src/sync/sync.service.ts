@@ -76,8 +76,7 @@ export class SyncService {
       const keepPriorDetail = item.source === 'CONTENT' &&
         item.content.trim() === item.title.trim() &&
         previous?.content && previous.content.trim() !== previous.title.trim();
-      const preservedSubmission = item.source === 'CONTENT' &&
-        item.submissionState === 'UNKNOWN' &&
+      const preservedSubmission = item.submissionState === 'UNKNOWN' &&
         previous?.submissionState === 'CONFIRMED';
       const safeItem: AssignmentSnapshot = {
         ...item,
