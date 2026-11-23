@@ -49,7 +49,7 @@ def safe_target(params):
         return "unspecified", None
     # Only hardcoded structural markers are retained. Course names, student
     # identifiers, message identifiers and arbitrary DOM text are discarded.
-    m = re.search(r"#li-(\\d{1,2})(?:\\b|\\s)", selector)
+    m = re.search(r"#li-(\d{1,2})(?:\b|\s)", selector)
     if m and 1 <= int(m.group(1)) <= 20:
         return "week-button", int(m.group(1))
     if "#journaltabletab" in selector:
@@ -139,7 +139,7 @@ def main():
                             # Only the numeric timeout is extracted; never export
                             # complete error messages (they can contain page text).
                             msg = str(error.get("message", "")) if isinstance(error, dict) else str(error)
-                            match = re.search(r"Timeout\\s+(\\d+)ms\\s+exceeded", msg, re.I)
+                            match = re.search(r"Timeout\s+(\d+)ms\s+exceeded", msg, re.I)
                             if match:
                                 outcome = "timeout"
                                 timeout = int(match.group(1))
