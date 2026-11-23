@@ -655,6 +655,9 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   }
 
   private async waitForWeekContent(page: Page, week: number): Promise<void> {
+    const diagnosticStarted = Date.now();
+    let completed = false;
+    try {
     // Some courses have no weekly block and therefore no "N учебная неделя"
     // heading. The selected button is still painted with Bootstrap's primary
     // class, so accept either that marker or the matching visible heading.
@@ -678,6 +681,10 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     const displayedWeek = Number(visibleText.match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i)?.[1]);
     if (displayedWeek && displayedWeek !== week) {
       throw new AbuReadTimeoutError(`переключение на ${week}-ю неделю (AIS показывает ${displayedWeek}-ю)`);
+    }
+    completed = true;
+    } finally {
+      this.syncDiagnostics?.recordWait('week-content-ready', diagnosticStarted, completed);
     }
   }
 
