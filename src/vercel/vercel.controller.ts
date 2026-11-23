@@ -52,6 +52,40 @@ export class VercelController {
     }
   }
 
+  @Get('security/keygen')
+  @Header('Content-Type', 'text/html; charset=utf-8')
+  @Header('Cache-Control', 'no-store, private')
+  keygenPage() {
+    // Uses the phone's Web Crypto API: the key is generated in the browser,
+    // not by our server, and is never submitted or saved by this page.
+    return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aisora — генерация ключа</title>
+<style>
+body{font:16px system-ui;background:#f5f8fa;color:#152535;margin:0;padding:25px}
+main{max-width:540px;margin:8vh auto;background:#fff;border-radius:20px;padding:25px}
+textarea{width:100%;box-sizing:border-box;min-height:85px;padding:12px;border-radius:10px}
+button{padding:12px 18px;background:#152535;color:white;border:0;border-radius:10px}
+p{line-height:1.5}small{color:#516373}
+</style></head><body><main><h2>🔐 Ключ Aisora</h2>
+<p>Создай 32-байтный ключ шифрования AES-256-GCM. Он генерируется <b>только в твоём браузере</b>, без отправки на сервер.</p>
+<button id="generate" type="button">Создать новый ключ</button>
+<p><textarea id="result" readonly autocomplete="off" spellcheck="false"></textarea></p>
+<button id="copy" type="button">Копировать ключ</button>
+<p><small>Сохрани один и тот же ключ в секретах Vercel и GitHub Actions под именем CREDENTIALS_MASTER_KEY. Никому его не присылай. Если потерять ключ, уже зашифрованные пароли АИС восстановить нельзя.</small></p>
+</main><script>
+document.getElementById('generate').onclick=()=>{
+ const bytes=new Uint8Array(32);
+ crypto.getRandomValues(bytes);
+ let raw=''; for (const value of bytes) raw+=String.fromCharCode(value);
+ document.getElementById('result').value=btoa(raw);
+};
+document.getElementById('copy').onclick=async()=>{
+ await navigator.clipboard.writeText(document.getElementById('result').value);
+};
+</script></body></html>`;
+  }
+
   @Get('telegram/setup')
   @Header('Content-Type', 'text/html; charset=utf-8')
   @Header('Cache-Control', 'no-store')
