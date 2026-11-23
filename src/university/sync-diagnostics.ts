@@ -72,14 +72,18 @@ export class SyncDiagnosticsRecorder {
     readonly outputDir: string,
   ) {}
 
-  static async start(page: Page): Promise<SyncDiagnosticsRecorder> {
+  static async start(page: Page, options: { traceEnabled?: boolean } = {}): Promise<SyncDiagnosticsRecorder> {
     const directory = resolve(process.cwd(), 'artifacts', 'sync-diagnostics',
       `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const recorder = new SyncDiagnosticsRecorder(page, page.context(), directory);
-    // Start only AFTER login: never record password typing or auth submission.
-    await recorder.context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-    recorder.traceStarted = true;
+    // Trace snapshots can take minutes to pack on small Macs. Disable them
+    // during performance benchmarking with AIS_SYNC_TRACE_ENABLED=false.
+    // Tracing always starts AFTER login; no password-typing actions captured.
+    if (options.traceEnabled !== false) {
+      await recorder.context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+      recorder.traceStarted = true;
+    }
     page.on('response', recorder.responseListener);
     page.on('requestfailed', recorder.failedListener);
     return recorder;
@@ -146,7 +150,10 @@ export class SyncDiagnosticsRecorder {
   async finish(): Promise<string> {
     this.page.off('response', this.responseListener);
     this.page.off('requestfailed', this.failedListener);
+    // Distinguish real browser work from packaging screenshots + DOM traces.
+    const browserElapsedMs = Date.now() - this.startedAt;
     let traceSaved = false;
+    const traceStopStarted = Date.now();
     if (this.traceStarted) {
       try {
         await this.context.tracing.stop({ path: resolve(this.outputDir, 'trace.zip') });
@@ -155,8 +162,11 @@ export class SyncDiagnosticsRecorder {
         // Always preserve sanitized metadata even if trace archive fails.
       }
     }
+    const traceStopMs = Date.now() - traceStopStarted;
     const report = {
       format: 'aisora-sync-diagnostics-v1',
+      browserElapsedMs,
+      traceStopMs,
       startedAt: new Date(this.startedAt).toISOString(),
       elapsedMs: Date.now() - this.startedAt,
       traceSaved,
