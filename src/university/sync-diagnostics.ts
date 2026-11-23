@@ -59,11 +59,11 @@ export class SyncDiagnosticsRecorder {
       `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const recorder = new SyncDiagnosticsRecorder(page, page.context(), directory);
-    page.on('response', recorder.responseListener);
-    page.on('requestfailed', recorder.failedListener);
     // Start only AFTER login: never record password typing or auth submission.
     await recorder.context.tracing.start({ screenshots: true, snapshots: true, sources: true });
     recorder.traceStarted = true;
+    page.on('response', recorder.responseListener);
+    page.on('requestfailed', recorder.failedListener);
     return recorder;
   }
 
