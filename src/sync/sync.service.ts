@@ -70,11 +70,6 @@ export class SyncService {
       .map(({ courseRef, weekNumber }) => `${courseRef}|${weekNumber}`));
     let changed = 0;
     for (const item of snapshotAssignments) {
-      const hash = createHash('sha256').update(JSON.stringify({
-        type: item.type, title: item.title, weekNumber: item.weekNumber, content: item.content,
-        requiredState: item.requiredState, source: item.source, submitted: item.submitted,
-        submissionState: item.submissionState, grade: item.grade,
-      })).digest('hex');
       const previous = previousByRef.get(item.externalRef);
       // An unchanged/empty detail dialog is UNKNOWN, not evidence that
       // a previously read assignment or confirmed submission disappeared.
@@ -90,6 +85,11 @@ export class SyncService {
         submitted: preservedSubmission ? true : item.submitted,
         submissionState: preservedSubmission ? 'CONFIRMED' : item.submissionState,
       };
+      const hash = createHash('sha256').update(JSON.stringify({
+        type: safeItem.type, title: safeItem.title, weekNumber: safeItem.weekNumber, content: safeItem.content,
+        requiredState: safeItem.requiredState, source: safeItem.source, submitted: safeItem.submitted,
+        submissionState: safeItem.submissionState, grade: safeItem.grade,
+      })).digest('hex');
       const stored: StoredAssignment = {
         ...safeItem,
         contentHash: hash,
