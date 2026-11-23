@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Header, Headers, Post } from '@nestjs/common';
 import { VercelTelegramService } from './vercel-telegram.service';
+import { Pool } from 'pg';
 
 @Controller()
 export class VercelController {
@@ -20,6 +21,35 @@ export class VercelController {
       aisSyncEnabled: false,
       submissionEnabled: false,
     };
+  }
+
+  /**
+   * Validate Neon connectivity without disclosing connection details or
+   * requiring any migrations. A short-lived pool avoids keeping connections
+   * alive in a Vercel serverless invocation.
+   */
+  @Get('health/db')
+  @Header('Cache-Control', 'no-store')
+  async databaseHealth() {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      return { status: 'not_configured', database: 'postgresql', tablesChecked: false };
+    }
+    const pool = new Pool({
+      connectionString,
+      max: 1,
+      connectionTimeoutMillis: 4000,
+      idleTimeoutMillis: 1000,
+    });
+    try {
+      await pool.query('SELECT 1');
+      return { status: 'connected', database: 'postgresql', tablesChecked: false };
+    } catch {
+      // Avoid leaking usernames, host names or Neon credentials.
+      return { status: 'unavailable', database: 'postgresql', tablesChecked: false };
+    } finally {
+      await pool.end().catch(() => undefined);
+    }
   }
 
   @Get('telegram/setup')
