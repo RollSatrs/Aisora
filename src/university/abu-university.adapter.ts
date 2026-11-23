@@ -671,36 +671,48 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   }
 
   private async waitForWeekContent(page: Page, week: number): Promise<void> {
-    const diagnosticStarted = Date.now();
+    const started = Date.now();
     let completed = false;
     try {
-    // Some courses have no weekly block and therefore no "N учебная неделя"
-    // heading. The selected button is still painted with Bootstrap's primary
-    // class, so accept either that marker or the matching visible heading.
-    await page.waitForFunction((weekNumber) => {
-      const item = document.querySelector(`#li-${weekNumber}`);
-      const link = item?.querySelector('a');
-      const marker = `${item?.className ?? ''} ${link?.className ?? ''}`.toLowerCase();
-      const selected = /(?:active|selected|primary)/.test(marker)
-        || link?.getAttribute('aria-selected') === 'true'
-        || link?.getAttribute('aria-current') === 'true';
-      const visibleText = (document.querySelector('#journaltabletab') as HTMLElement | null)?.innerText ?? '';
-      const displayedWeek = visibleText.replace(/\s+/g, ' ')
-        .match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i)?.[1];
-      return selected || Number(displayedWeek) === weekNumber;
-    }, week, {
-      timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000),
-    });
-    await page.waitForTimeout(Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 3_000));
+      // The old implementation accepted a selected button while the panel
+      // still displayed another week. Require the visible heading to agree
+      // whenever one exists, so stale AJAX fragments cannot be attributed
+      // to the requested week.
+      const evidenceHandle = await page.waitForFunction((weekNumber) => {
+        const item = document.querySelector(`#li-${weekNumber}`);
+        const link = item?.querySelector('a');
+        const marker = `${item?.className ?? ''} ${link?.className ?? ''}`.toLowerCase();
+        const selected = /(?:active|selected|primary)/.test(marker)
+          || link?.getAttribute('aria-selected') === 'true'
+          || link?.getAttribute('aria-current') === 'true';
+        const visibleText = (document.querySelector('#journaltabletab') as HTMLElement | null)?.innerText ?? '';
+        const headingMatch = visibleText.replace(/\s+/g, ' ')
+          .match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i);
+        const displayedWeek = headingMatch ? Number(headingMatch[1]) : undefined;
+        if (displayedWeek !== undefined) {
+          return displayedWeek === weekNumber ? 'heading-confirmed' : false;
+        }
+        return selected ? 'marker-only' : false;
+      }, week, {
+        timeout: Number(this.config.get<string>('AIS_CONTENT_DETAIL_TIMEOUT_MS') ?? 120_000),
+      });
+      const evidence = await evidenceHandle.jsonValue();
+      // Short settling is optional until we validate it against actual AJAX
+      // responses. Marker-only weeks always retain the conservative delay.
+      const adaptive = this.config.get<string>('AIS_ADAPTIVE_WEEK_WAIT') === 'true';
+      const settleMs = adaptive && evidence === 'heading-confirmed'
+        ? Number(this.config.get<string>('AIS_AJAX_FAST_SETTLE_MS') ?? 350)
+        : Number(this.config.get<string>('AIS_AJAX_SETTLE_MS') ?? 3_000);
+      if (settleMs > 0) await page.waitForTimeout(settleMs);
 
-    const visibleText = normalizeText(await page.locator('#journaltabletab').innerText().catch(() => ''));
-    const displayedWeek = Number(visibleText.match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i)?.[1]);
-    if (displayedWeek && displayedWeek !== week) {
-      throw new AbuReadTimeoutError(`переключение на ${week}-ю неделю (AIS показывает ${displayedWeek}-ю)`);
-    }
-    completed = true;
+      const visibleText = normalizeText(await page.locator('#journaltabletab').innerText().catch(() => ''));
+      const displayedWeek = Number(visibleText.match(/(?:^|\s)(\d{1,2})\s+учебная\s+неделя\b/i)?.[1]);
+      if (displayedWeek && displayedWeek !== week) {
+        throw new AbuReadTimeoutError(`переключение на ${week}-ю неделю (AIS показывает ${displayedWeek}-ю)`);
+      }
+      completed = true;
     } finally {
-      this.syncDiagnostics?.recordWait('week-content-ready', diagnosticStarted, completed);
+      this.syncDiagnostics?.recordWait('week-content-ready', started, completed);
     }
   }
 
