@@ -36,6 +36,7 @@ import { AisContentExtractor } from './ais-content-extractor';
 import { extractSroRequirements, matchSroBrief, type WeeklySroBrief } from './sro-assignment-matcher';
 import { classifySroHistory } from './sro-history';
 import { AisHtmlDiagnostics } from './ais-html-diagnostics';
+import { SyncDiagnosticsRecorder } from './sync-diagnostics';
 import type { SyncProgress, UniversityAdapter, UniversityReadOptions } from './university-adapter';
 
 const AIS_URL = 'https://ais.semuniver.kz/login.php';
@@ -84,6 +85,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
   private readonly contexts = new Map<string, BrowserContext>();
   private operation = Promise.resolve();
   private lastRequestAt = 0;
+  private syncDiagnostics?: SyncDiagnosticsRecorder;
 
   constructor(
     private readonly config: ConfigService,
@@ -123,6 +125,16 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         await this.withStage('автоматический вход', () => this.login(page, accountId));
       }
 
+      // Start AFTER login, excluding credentials from the trace.
+      if (this.config.get<string>('AIS_SYNC_DIAGNOSTICS_ENABLED') === 'true') {
+        try {
+          this.syncDiagnostics = await SyncDiagnosticsRecorder.start(page);
+          this.logger.log('Local sync diagnostics started after authentication');
+        } catch {
+          this.logger.warn('Sync diagnostics unavailable; normal sync continues');
+        }
+      }
+      try {
       await onProgress?.('Читаю список дисциплин');
       const dashboardCourses = await this.withStage('чтение списка дисциплин', () => this.readDashboardCourses(page));
       await onProgress?.('Открываю электронный журнал');
@@ -145,6 +157,18 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
         assignments: journal.assignments,
         schedule,
       };
+      } finally {
+        const recorder = this.syncDiagnostics;
+        this.syncDiagnostics = undefined;
+        if (recorder) {
+          try {
+            const outputDir = await recorder.finish();
+            this.logger.log(`Local sync diagnostic files saved in ${outputDir}`);
+          } catch {
+            this.logger.warn('Failed to save optional sync diagnostics');
+          }
+        }
+      }
     });
   }
 
@@ -158,7 +182,7 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
 
   private async withStage<T>(stage: string, action: () => Promise<T>): Promise<T> {
     try {
-      return await action();
+      return this.syncDiagnostics ? await this.syncDiagnostics.stage(stage, action) : await action();
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') throw new AbuReadTimeoutError(stage);
       throw error;
@@ -244,11 +268,17 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
     }
   }
 
+  private async diagnosticClick<T>(label: string, locator: import('playwright').Locator, action: () => Promise<T>): Promise<T> {
+    return this.syncDiagnostics ? this.syncDiagnostics.click(label, locator, action) : action();
+  }
+
   private async throttle(): Promise<void> {
+    const started = Date.now();
     const minimum = Number(this.config.get<string>('AIS_MIN_REQUEST_INTERVAL_MS') ?? 1200);
     const wait = Math.max(0, this.lastRequestAt + minimum - Date.now());
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
     this.lastRequestAt = Date.now();
+    this.syncDiagnostics?.recordThrottle(started);
   }
 
   private async readDashboardCourses(page: Page): Promise<CourseSnapshot[]> {
