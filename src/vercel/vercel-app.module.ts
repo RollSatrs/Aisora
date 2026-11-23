@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { VercelController } from './vercel.controller';
 import { CloudAcademicReader } from './cloud-academic.reader';
+import { CloudCredentialService } from './cloud-credential.service';
+import { CloudSyncDispatcher } from './cloud-sync.dispatcher';
 import { VercelTelegramService } from './vercel-telegram.service';
 
 /**
@@ -12,6 +14,6 @@ import { VercelTelegramService } from './vercel-telegram.service';
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true })],
   controllers: [VercelController],
-  providers: [CloudAcademicReader, VercelTelegramService],
+  providers: [CloudAcademicReader, CloudCredentialService, CloudSyncDispatcher, VercelTelegramService],
 })
 export class VercelAppModule {}
