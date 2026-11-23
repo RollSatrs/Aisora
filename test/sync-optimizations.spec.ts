@@ -74,6 +74,32 @@ describe('safe incremental Aisora synchronization', () => {
     expect(stored?.status).toBe('SUBMITTED_CONFIRMED');
   });
 
+  it('preserves a confirmed SRO submission when file-history inspection is inconclusive', async () => {
+    const sroPrevious: StoredAssignment = {
+      ...oldAssignment,
+      externalRef: 'sro-submission',
+      type: 'SRO',
+      title: 'Самостоятельная работа 12 неделя',
+      source: 'SRO_TAB',
+      content: 'Самостоятельная работа 12 неделя; срок сдачи',
+    };
+    const repository = new InMemoryAcademicRepository();
+    const accountId = 'test-account';
+    await repository.upsertAssignment(accountId, sroPrevious);
+    const newSnapshot = snapshot([{
+      externalRef: sroPrevious.externalRef, courseRef, weekNumber,
+      type: 'SRO', source: 'SRO_TAB', title: sroPrevious.title,
+      content: sroPrevious.content, submitted: false,
+      submissionState: 'UNKNOWN', requiredState: 'REQUIRED',
+    }]);
+    const adapter: UniversityAdapter = { key: 'test', readSnapshot: async () => newSnapshot };
+    await new SyncService(adapter, repository).synchronize(accountId);
+    const stored = (await repository.listAssignments(accountId))
+      .find((item) => item.externalRef === sroPrevious.externalRef);
+    expect(stored?.submissionState).toBe('CONFIRMED');
+    expect(stored?.submitted).toBe(true);
+  });
+
   it('marks unmatched sent messages UNKNOWN when message reading was incomplete', () => {
     const incomplete = parseContentAssignments(courseRef, weekNumber, [title], [], new Map(), false);
     const complete = parseContentAssignments(courseRef, weekNumber, [title], [], new Map(), true);
