@@ -1,0 +1,32 @@
+name: Cloud sync infrastructure smoke test
+
+# Does NOT log into ABU AIS or use student credentials. This tests that
+# a GitHub-hosted Linux runner can execute our Playwright browser workload.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-smoke:
+    name: Test cloud Playwright execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium and system packages
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Launch browser and verify page extraction
+        run: node scripts/cloud-playwright-smoke.cjs
