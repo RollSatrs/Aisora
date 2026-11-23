@@ -35,6 +35,21 @@ describe('Vercel HTTP-only deployment', () => {
     await expect(webhook.handle('wrong', { update_id: 100 })).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it('never registers a webhook without a correct shared secret', async () => {
+    const service = makeService('123:testing', 'a_secret');
+    await expect(service.registerWebhook(undefined)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.registerWebhook('wrong')).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(makeService().registerWebhook('a_secret')).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('exposes a phone-friendly setup page without embedding credentials', () => {
+    const controller = new VercelController(makeService());
+    const html = controller.setupPage();
+    expect(html).toContain('TELEGRAM_WEBHOOK_SECRET');
+    expect(html).toContain("fetch('/telegram/setup'");
+    expect(html).not.toContain('123:testing');
+  });
+
   it('rejects malformed Telegram updates before any external request', async () => {
     const webhook = makeService('123:testing', 'a_secret');
     await expect(webhook.handle('a_secret', {})).rejects.toBeInstanceOf(BadRequestException);
