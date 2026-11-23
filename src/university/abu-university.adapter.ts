@@ -717,46 +717,92 @@ export class AbuUniversityAdapter implements UniversityAdapter, OnModuleDestroy 
       }).map(({ name }) => name);
   }
 
-  private async readSentMessages(page: Page): Promise<SentMessageObservation[]> {
+  private async readSentMessages(
+    page: Page,
+    detailCache: Map<string, SentMessageObservation>,
+    failedKeys: Set<string>,
+  ): Promise<{ messages: SentMessageObservation[]; complete: boolean }> {
     const startedAt = Date.now();
     const rows = page.locator('#tab_3-2 table tbody tr');
     const summaries = parseSentMessageRows(await rows.allTextContents());
     const limit = Math.min(summaries.length, Number(this.config.get<string>('AIS_SENT_MESSAGE_DETAIL_LIMIT') ?? 50));
-    // Subject matching already requires СРСП/СРОП or Лаб in the subject.
-    // Unrelated messages can stay as summaries and do not need a detail click.
+    // Keep the original per-course row scope. Cache is keyed by a hash of the
+    // message identity, timestamp and subject, never by row index alone.
     const relevant = summaries.slice(0, limit).filter((row) => isRelevantSentSubject(row.subject));
     const timeout = Number(this.config.get<string>('AIS_MESSAGE_DETAIL_TIMEOUT_MS') ?? 7_000);
     let visited = 0;
     let failed = 0;
+    let cached = 0;
+    let viewingDetail = false;
+    let complete = summaries.length <= limit;
 
-    for (const [index, summary] of relevant.entries()) {
+    for (const summary of relevant) {
+      const key = stableExternalRef([summary.externalRef, summary.sentAt, summary.subject]);
+      const previous = detailCache.get(key);
+      if (previous) {
+        summary.body = previous.body;
+        summary.resourceTexts = previous.resourceTexts;
+        cached += 1;
+        visited += 1;
+        continue;
+      }
+      // One timeout per unchanged message per /sync, rather than repeating a
+      // 60-second wait for each of eight courses. Failed messages stay UNKNOWN.
+      if (failedKeys.has(key)) {
+        failed += 1;
+        complete = false;
+        continue;
+      }
       const row = page.locator(`#mail-${summary.externalRef}`);
-      if (!(await row.count())) continue;
+      if (!(await row.count())) {
+        failedKeys.add(key);
+        failed += 1;
+        complete = false;
+        continue;
+      }
       try {
+        if (viewingDetail) {
+          await this.diagnosticClick('return-to-sent-folder',
+            page.getByText('Отправленные', { exact: true }),
+            () => page.getByText('Отправленные', { exact: true }).click({ timeout }));
+          await page.locator('#tab_3-2 table tbody tr').first()
+            .waitFor({ state: 'visible', timeout });
+          viewingDetail = false;
+        }
         const before = normalizeText(await page.locator('#inboxmail').innerText().catch(() => ''));
-        await this.diagnosticClick('sent-message-row-open', row.locator('td').first(), () => row.locator('td').first().click({ force: true, timeout }));
-        await page.waitForFunction((previous) => {
-          const text = (document.querySelector('#inboxmail')?.textContent ?? '').replace(/\\s+/g, ' ').trim();
-          return text.length > 0 && text !== previous;
+        await this.diagnosticClick('sent-message-row-open', row.locator('td').first(),
+          () => row.locator('td').first().click({ force: true, timeout }));
+        viewingDetail = true;
+        // Never attach an old message body to a new row: the new dialog must
+        // contain different content, or this message is considered unread.
+        await page.waitForFunction((previousText) => {
+          const text = (document.querySelector('#inboxmail')?.textContent ?? '')
+            .replace(/\s+/g, ' ').trim();
+          return text.length > 0 && text !== previousText;
         }, before, { timeout });
         const container = page.locator('#inboxmail');
-        summary.body = normalizeText(await container.innerText());
+        const body = normalizeText(await container.innerText());
+        if (!body || body === before) throw new Error('MessageBodyUnverified');
+        summary.body = body;
         summary.resourceTexts = (await this.contentExtractor.extractLinkedResources(
           page, container, Number(this.config.get<string>('AIS_MESSAGE_ATTACHMENT_TIMEOUT_MS') ?? 15_000),
         )).map((resource) => resource.text);
+        detailCache.set(key, {
+          externalRef: summary.externalRef,
+          sentAt: summary.sentAt,
+          subject: summary.subject,
+          body: summary.body,
+          resourceTexts: summary.resourceTexts,
+        });
         visited += 1;
       } catch {
-        // Preserve the summary, but do not mistake a stale dialog for evidence.
+        failedKeys.add(key);
         failed += 1;
-      }
-      if (index + 1 < relevant.length) {
-        await this.diagnosticClick('return-to-sent-folder', page.getByText('Отправленные', { exact: true }), () => page.getByText('Отправленные', { exact: true }).click({ timeout }));
-        await page.locator('#tab_3-2 table tbody tr').first()
-          .waitFor({ state: 'visible', timeout }).catch(() => undefined);
+        complete = false;
       }
     }
-    this.logger.log(`AIS sent messages total=${summaries.length} eligible=${relevant.length} read=${visited} failed=${failed} elapsed_ms=${Date.now() - startedAt}`);
-    return summaries;
+    this.logger.log(`AIS sent messages total=${summaries.length} eligible=${relevant.length} read=${visited} cached=${cached} failed=${failed} elapsed_ms=${Date.now() - startedAt}`);
+    return { messages: summaries, complete };
   }
 
   private async readContentDetails(
