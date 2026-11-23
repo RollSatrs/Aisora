@@ -3,6 +3,8 @@ import { BadRequestException, ServiceUnavailableException, UnauthorizedException
 import { ConfigService } from '@nestjs/config';
 import { VercelController } from '../src/vercel/vercel.controller';
 import { VercelTelegramService } from '../src/vercel/vercel-telegram.service';
+import { CloudCredentialService } from '../src/vercel/cloud-credential.service';
+import { CloudSyncDispatcher } from '../src/vercel/cloud-sync.dispatcher';
 import type { CloudAcademicReader } from '../src/vercel/cloud-academic.reader';
 import type { AccountState, StoredAssignment } from '../src/domain/models';
 
@@ -14,10 +16,10 @@ function stubReader(account?: AccountState, tasks: StoredAssignment[] = []) {
 }
 
 function makeService(token = '', secret = ''): VercelTelegramService {
-  return new VercelTelegramService(new ConfigService({
-    TELEGRAM_BOT_TOKEN: token,
-    TELEGRAM_WEBHOOK_SECRET: secret,
-  }), stubReader());
+  const config = new ConfigService({ TELEGRAM_BOT_TOKEN: token, TELEGRAM_WEBHOOK_SECRET: secret });
+  const credentials = new CloudCredentialService(config);
+  const dispatch = new CloudSyncDispatcher(config, credentials);
+  return new VercelTelegramService(config, stubReader(), credentials, dispatch);
 }
 
 describe('Vercel HTTP-only deployment', () => {
