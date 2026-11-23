@@ -35,6 +35,22 @@ describe('Vercel HTTP-only deployment', () => {
     await expect(webhook.handle('wrong', { update_id: 100 })).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it('reports a missing Neon DATABASE_URL without attempting a connection', async () => {
+    const previous = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      const controller = new VercelController(makeService());
+      expect(await controller.databaseHealth()).toEqual({
+        status: 'not_configured',
+        database: 'postgresql',
+        tablesChecked: false,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+  });
+
   it('never registers a webhook without a correct shared secret', async () => {
     const service = makeService('123:testing', 'a_secret');
     await expect(service.registerWebhook(undefined)).rejects.toBeInstanceOf(UnauthorizedException);
