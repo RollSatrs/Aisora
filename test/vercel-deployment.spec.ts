@@ -23,6 +23,20 @@ function makeService(token = '', secret = ''): VercelTelegramService {
 }
 
 describe('Vercel HTTP-only deployment', () => {
+  it('keeps cloud /connect disabled until AES key is present', () => {
+    const config = new ConfigService({ DATABASE_URL: 'postgresql://unused/test' });
+    const credentials = new CloudCredentialService(config);
+    expect(credentials.configured()).toBe(false);
+  });
+
+  it('refuses cloud /sync dispatch without a GitHub Actions token', async () => {
+    const config = new ConfigService({ GITHUB_SYNC_REPO: 'RollSatrs/Aisora' });
+    const credentials = new CloudCredentialService(config);
+    const dispatcher = new CloudSyncDispatcher(config, credentials);
+    expect(dispatcher.configured()).toBe(false);
+    await expect(dispatcher.dispatch('telegram:123')).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
   it('keeps cloud Telegram tests independent of real Postgres and AIS credentials', () => {
     const reader = stubReader();
     expect(reader).toBeDefined();
