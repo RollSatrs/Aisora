@@ -1,0 +1,68 @@
+name: Migrate Neon database
+
+# One-time, explicit operator action. Never migrate on every push/deploy.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aisora-neon-production-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Apply versioned Drizzle migrations to Neon
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicitly configured database credentials
+        shell: bash
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Missing repository secret NEON_DATABASE_URL"
+            exit 1
+          fi
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Apply Drizzle migrations
+        run: pnpm db:migrate
+      - name: Confirm expected tables without printing user data
+        run: |
+          node - <<'NODE'
+          const { Client } = require('pg');
+          (async () => {
+            const client = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000 });
+            try {
+              await client.connect();
+              const names = ['users', 'university_accounts', 'courses', 'assignments', 'assignment_versions', 'credential_vault', 'course_preferences', 'sync_runs'];
+              const result = await client.query('SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = $1 AND tablename = ANY($2::text[])', ['public', names]);
+              const found = new Set(result.rows.map(r => r.tablename));
+              const missing = names.filter(n => !found.has(n));
+              if (missing.length) {
+                console.error('Missing expected tables:', missing.join(', '));
+                process.exitCode = 1;
+              } else {
+                console.log('Neon schema ready:', names.length, 'key tables found');
+              }
+            } catch (error) {
+              console.error('Neon connectivity or verification failed:', error instanceof Error ? error.name : 'unknown');
+              process.exitCode = 1;
+            } finally {
+              await client.end().catch(() => {});
+            }
+          })();
+          NODE
