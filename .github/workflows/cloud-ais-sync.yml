@@ -27,6 +27,7 @@ jobs:
       AIS_AUTOMATION_APPROVED: ${{ vars.AIS_AUTOMATION_APPROVED }}
       AIS_BROWSER_HEADLESS: 'true'
       AIS_BROWSER_CHANNEL: chromium
+      AIS_CLOUD_PAGE_DIAGNOSTICS: 'true'
       # Fail within a minute when the university blocks the cloud runner,
       # instead of waiting the local desktop default of five minutes.
       AIS_PAGE_TIMEOUT_MS: '60000'
